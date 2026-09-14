@@ -73,10 +73,12 @@ EXCEL_FIELDS = [
 
 # 검사 항목 라벨(D열) → DB 필드 매핑
 # (라벨 매칭키, 1차_결과, 1차_일자, 재검_결과, 재검_일자, AGING여부)
+# ⚠ 매칭키는 다른 항목명에 포함되지 않도록 고유하게 지정.
+#    특히 'AGING 기능시험'에 '기능'이 들어있어, 조합시험 키는 '조합'으로 둔다.
 INSPECT_ROW_MAP = [
-    ('육안검사', '1차_육안', '1차_육안_일자', '재검_육안', '재검_육안_일자', False),
+    ('육안', '1차_육안', '1차_육안_일자', '재검_육안', '재검_육안_일자', False),
     ('전자소자', '1차_특성', '1차_특성_일자', '재검_특성', '재검_특성_일자', False),
-    ('기능', '1차_조합', '1차_조합_일자', '재검_조합', '재검_조합_일자', False),
+    ('조합', '1차_조합', '1차_조합_일자', '재검_조합', '재검_조합_일자', False),
     ('AGING', '1차_AGING', '1차_AGING_일자', '재검_AGING', '재검_AGING_일자', True),
     ('FULL부하', '1차_FULL부하', '1차_FULL부하_일자', '재검_FULL부하', '재검_FULL부하_일자', False),
 ]
@@ -189,10 +191,13 @@ def calc_aging_48h(start_date_str, multiline=False):
     if not start_date_str:
         return ""
     raw = str(start_date_str).strip()
-    if "~" in raw:
-        return raw
+    if not raw or raw.lower() in ('nan', 'none', 'nat', '-'):
+        return ""
+    # 이미 '~'가 포함돼 있어도 맨 앞 날짜(시작일)만 뽑아 항상 +2일로 재계산
+    head = raw.split("~")[0].strip()
+    head = head.replace("\n", " ").strip()[:10]
     try:
-        dt = datetime.strptime(raw[:10], "%Y-%m-%d")
+        dt = datetime.strptime(head, "%Y-%m-%d")
         dt_end = dt + timedelta(days=2)
         s_str = dt.strftime("%Y-%m-%d")
         e_str = dt_end.strftime("%Y-%m-%d")
@@ -414,8 +419,11 @@ def _fill_inspect_row(ws, row, col, v_nospace, row_data):
         has_retest = bool(r2)
 
         if is_aging:
-            d1 = calc_aging_48h(row_data.get(d1k, ''), multiline=True) if r1 else ""
-            d2 = calc_aging_48h(row_data.get(d2k, ''), multiline=True) if r2 else ""
+            # AGING: 판정이 있으면 항상 +2일 범위로. 일자가 비면 접수일을 기준으로 사용.
+            base1 = str(row_data.get(d1k, '')).strip() or str(row_data.get('접수일', '')).strip()
+            base2 = str(row_data.get(d2k, '')).strip()
+            d1 = calc_aging_48h(base1, multiline=True) if r1 else ""
+            d2 = calc_aging_48h(base2, multiline=True) if r2 else ""
         else:
             d1 = str(row_data.get(d1k, '')).strip()
             d2 = str(row_data.get(d2k, '')).strip()
@@ -711,14 +719,24 @@ try:
             hide_index=True,
             height=750,
             num_rows="dynamic" if is_master else "fixed",
-            key="main_editor_v13"
+            key="main_editor_v14"
         )
 
-        # ✅ 개선⑩: 행 단위 .loc 루프 제거. 원본 인덱스로 한 번에 대입
+        # ✅ 개선⑰: 편집 내용 동기화는 '실제 변경이 있을 때만' 수행.
+        #   매 실행마다 무조건 대입하면 data_editor가 재계산되며 스크롤이 위로 튕기고,
+        #   리포트/다운로드 버튼 클릭 시 NO.가 엉뚱하게 이동하는 현상이 생김.
         edited_aligned = edited_df.copy()
         edited_aligned.index = v_df.index[:len(edited_df)]
         cols_to_sync = ['선택'] + EXCEL_FIELDS
-        st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync] = edited_aligned[cols_to_sync]
+        try:
+            current_block = st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync]
+            if not current_block.reset_index(drop=True).equals(
+                    edited_aligned[cols_to_sync].reset_index(drop=True)):
+                st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync] = \
+                    edited_aligned[cols_to_sync]
+        except Exception:
+            st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync] = \
+                edited_aligned[cols_to_sync]
 
         b1, b2, b3 = st.columns([3, 3, 4])
 
@@ -796,19 +814,31 @@ try:
         sel_rows = edited_df[edited_df['선택'] == True]
         if not sel_rows.empty:
             st.markdown("---")
-            st.subheader(f"📑 수리 REPORT 발행 (총 {len(sel_rows)}건 선택됨)")
-            # ✅ 개선⑫: 리포트도 버튼 클릭 시에만 생성
-            if st.button(f"🛠️ 선택한 {len(sel_rows)}건 REPORT 생성"):
-                try:
-                    r_tuple = tuple(tuple(sorted(r.items())) for r in sel_rows.to_dict(orient="records"))
-                    st.session_state["_report_bytes"] = generate_repair_report(r_tuple, TEMPLATE_FILE)
-                except Exception as e:
-                    st.error(f"REPORT 생성 오류: {e}")
+            sel_nos = [str(x).strip() for x in sel_rows['NO.'].tolist()]
+            st.subheader(f"📑 수리 REPORT 발행 (선택: NO. {', '.join(sel_nos)} / 총 {len(sel_rows)}건)")
+
+            # ✅ 개선⑱: 리포트 생성을 form으로 감싸 버튼 클릭 시 상단 표가
+            #   재계산·재스크롤되지 않도록 함. 선택 데이터는 즉시 스냅샷으로 확보.
+            with st.form("report_form", clear_on_submit=False):
+                submitted = st.form_submit_button(
+                    f"🛠️ 선택한 {len(sel_rows)}건 REPORT 생성", type="primary"
+                )
+                if submitted:
+                    try:
+                        snapshot = sel_rows.to_dict(orient="records")
+                        r_tuple = tuple(tuple(sorted(r.items())) for r in snapshot)
+                        st.session_state["_report_bytes"] = generate_repair_report(r_tuple, TEMPLATE_FILE)
+                        st.session_state["_report_nos"] = "_".join(sel_nos)[:40]
+                        st.toast(f"✅ REPORT 생성 완료 (NO. {', '.join(sel_nos)})", icon="📑")
+                    except Exception as e:
+                        st.error(f"REPORT 생성 오류: {e}")
+
             if st.session_state.get("_report_bytes"):
+                nos_tag = st.session_state.get("_report_nos", "")
                 st.download_button(
                     label="📥 수리 REPORT 엑셀 다운로드",
                     data=st.session_state["_report_bytes"],
-                    file_name=f"수리Report_{datetime.now().strftime('%y%m%d')}.xlsx",
+                    file_name=f"수리Report_NO{nos_tag}_{datetime.now().strftime('%y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
