@@ -47,19 +47,16 @@ INSPECT_2ND_PAIRS = {
 EXCEL_FIELDS = [
     'NO.', '접수일', '발생일', '제조처', '접수처', '프로젝트', '제품명', '제품 S/N', '위치', '접수횟수', 
     '유/무상', '접수내역', '확인내역', 
-    # --- 1차 검사 영역 ---
     '1차_육안', '1차_육안_일자',
     '1차_특성', '1차_특성_일자',
     '1차_조합', '1차_조합_일자',
     '1차_AGING', '1차_AGING_일자',
     '1차_FULL부하', '1차_FULL부하_일자',
-    # --- 2차 재검사 영역 ---
     '재검_육안', '재검_육안_일자',
     '재검_특성', '재검_특성_일자',
     '재검_조합', '재검_조합_일자',
     '재검_AGING', '재검_AGING_일자',
     '재검_FULL부하', '재검_FULL부하_일자',
-    # --- 본체 관리 영역 ---
     '불량원인', '수리내역', 'F/W', 'BASE PBA S/N', 'SMPS S/N', 
     'MAC', '투입부품1', '부품1 수량', '투입부품2', '부품2 수량', '투입부품3', '부품3 수량', 
     '투입부품4', '부품4 수량', '교체 (전) S/N', '교체(후) S/N', 
@@ -733,8 +730,6 @@ try:
             "선택": st.column_config.CheckboxColumn("선택", help="수리 REPORT 발행 시 체크", default=False),
             "NO.": st.column_config.TextColumn("NO.", help="신규 행 추가 시 비워두면 자동 채번됩니다."),
             "접수횟수": st.column_config.TextColumn("접수횟수", disabled=True),
-            
-            # --- 1차 검사 영역 ---
             "1차_육안": st.column_config.SelectboxColumn("1차_육안", options=pass_fail_options, required=False),
             "1차_육안_일자": st.column_config.TextColumn("1차_육안_일자"),
             "1차_특성": st.column_config.SelectboxColumn("1차_특성", options=pass_fail_options, required=False),
@@ -745,8 +740,6 @@ try:
             "1차_AGING_일자": st.column_config.TextColumn("1차_AGING_일자", help="시작일 입력 시 +2일 자동 계산"),
             "1차_FULL부하": st.column_config.SelectboxColumn("1차_FULL부하", options=pass_fail_options, required=False),
             "1차_FULL부하_일자": st.column_config.TextColumn("1차_FULL부하_일자"),
-
-            # --- 2차 재검사 영역 ---
             "재검_육안": st.column_config.SelectboxColumn("🟡 재검_육안", options=pass_fail_options, required=False, help="2차 재검사 판정"),
             "재검_육안_일자": st.column_config.TextColumn("🟡 재검_육안_일자"),
             "재검_특성": st.column_config.SelectboxColumn("🟡 재검_특성", options=pass_fail_options, required=False, help="2차 재검사 판정"),
@@ -757,8 +750,6 @@ try:
             "재검_AGING_일자": st.column_config.TextColumn("🟡 재검_AGING_일자", help="시작일 입력 시 +2일 자동 계산"),
             "재검_FULL부하": st.column_config.SelectboxColumn("🟡 재검_FULL부하", options=pass_fail_options, required=False, help="2차 재검사 판정"),
             "재검_FULL부하_일자": st.column_config.TextColumn("🟡 재검_FULL부하_일자"),
-
-            # --- 본체 관리 항목 ---
             "확인내역": st.column_config.TextColumn("확인내역"),
             "불량원인": st.column_config.TextColumn("불량원인"),
             "수리내역": st.column_config.TextColumn("수리내역"),
@@ -1065,7 +1056,7 @@ try:
             else:
                 st.info("데이터가 없습니다.")
 
-        c_col4:
+        with c_col4:
             st.markdown("##### ⚙️ 주요 투입 교체 부품 (Top 5)")
             parts_list = []
             for c in ['투입부품1', '투입부품2', '투입부품3', '투입부품4']:
