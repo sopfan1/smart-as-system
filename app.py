@@ -521,11 +521,12 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
                 _safe_set(ws, r, vc, row_data.get('제품 S/N', ''))
             elif v_str == "접수내역":
                 _safe_set(ws, r, vc, row_data.get('접수내역', ''))
-            elif "불량증상" in v_nospace:
-                # 불량증상/수리내역 값은 10번 열(J)에 기록
+            elif "불량증상" in v_nospace and "사진" not in v_nospace:
+                # 불량증상 값(=대장의 확인내역)은 라벨 행의 값칸(J열, =10번)에 기록
                 _safe_set(ws, r, 10, row_data.get('확인내역', ''))
             elif "수리내역" in v_nospace and "사진" not in v_nospace:
-                _safe_set(ws, r, 10, repair_desc)
+                # 수리내역 값 = 불량원인 + 수리내역. 둘 다 비면 '-'.
+                _safe_set(ws, r, 10, repair_desc if repair_desc.strip() else "-")
             elif v_str == "비고":
                 _safe_set(ws, r, vc, row_data.get('비고', ''))
             elif "확인내역_사진" in v_nospace:
@@ -539,8 +540,12 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
                 if img2:
                     add_image_with_nudge(ws, img2, c, r, 4, 4)
             else:
-                # ✅ 개선⑯: 출하검사 표 채우기 (검사일자·판정, 재검 병합, AGING +2일)
-                _fill_inspect_row(ws, r, c, v_nospace, row_data)
+                # ✅ 개선⑯(수정): 출하검사 표는 '항목 라벨 열'에서만 채운다.
+                #   규격(기준) 칸 텍스트에도 '조합' 같은 단어가 있어, 라벨 외의
+                #   셀에서 매칭되면 판정/검사일자 열이 밀려 엉뚱한 칸에 값이 들어감.
+                #   항목 라벨은 D열(=4) 병합영역의 앵커에만 있으므로 col==4로 제한.
+                if c == 4:
+                    _fill_inspect_row(ws, r, c, v_nospace, row_data)
 
     buf = io.BytesIO()
     wb.save(buf)
