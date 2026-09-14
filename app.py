@@ -71,26 +71,15 @@ DATE_FIELDS = [
 ]
 
 # -------------------------------------------------------------
-# [2. 데이터베이스 자동 초기화 함수]
+# [2. 데이터베이스 자동 초기화 함수 (특수문자 방어)]
 # -------------------------------------------------------------
 def init_db():
     cursor = conn.cursor()
-    cursor.execute('''
+    # SQL 예약어 및 특수문자 컬럼 충돌 방지를 위해 따옴표 감싸기
+    columns_def = ", ".join([f'"{col}" TEXT' for col in EXCEL_FIELDS])
+    cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS as_data (
-            NO. TEXT, 접수일 TEXT, 발생일 TEXT, 제조처 TEXT, 접수처 TEXT, 
-            프로젝트 TEXT, 제품명 TEXT, 제품 S/N TEXT, 위치 TEXT, 접수횟수 TEXT, 
-            유/무상 TEXT, 접수내역 TEXT, 확인내역 TEXT, 
-            1차_육안 TEXT, 1차_육안_일자 TEXT, 1차_특성 TEXT, 1차_특성_일자 TEXT, 
-            1차_조합 TEXT, 1차_조합_일자 TEXT, 1차_AGING TEXT, 1차_AGING_일자 TEXT, 
-            1차_FULL부하 TEXT, 1차_FULL부하_일자 TEXT, 
-            재검_육안 TEXT, 재검_육안_일자 TEXT, 재검_특성 TEXT, 재검_특성_일자 TEXT, 
-            재검_조합 TEXT, 재검_조합_일자 TEXT, 재검_AGING TEXT, 재검_AGING_일자 TEXT, 
-            재검_FULL부하 TEXT, 재검_FULL부하_일자 TEXT, 
-            불량원인 TEXT, 수리내역 TEXT, F/W TEXT, BASE PBA S/N TEXT, SMPS S/N TEXT, 
-            MAC TEXT, 투입부품1 TEXT, 부품1 수량 TEXT, 투입부품2 TEXT, 부품2 수량 TEXT, 
-            투입부품3 TEXT, 부품3 수량 TEXT, 투입부품4 TEXT, 부품4 수량 TEXT, 
-            교체 (전) S/N TEXT, 교체(후) S/N TEXT, 처리결과 TEXT, 담당자 TEXT, 
-            완료일자 TEXT, 인계일자 TEXT, 비고 TEXT, 확인내역_사진 TEXT, 수리내역_사진 TEXT
+            {columns_def}
         )
     ''')
     conn.commit()
