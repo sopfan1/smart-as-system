@@ -115,7 +115,7 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
     return ed_df
 
 # -------------------------------------------------------------
-# [3. 보조 유틸 함수]
+# [3. 보조 유틸 함수 및 캐시 적용 엑셀 생성]
 # -------------------------------------------------------------
 def clean_date_str(val):
     if pd.isna(val): return ""
@@ -353,7 +353,9 @@ def format_report_result(val):
         else: formatted.append("-")
     return "\n".join(formatted) if formatted else "-"
 
-def generate_multi_repair_excel(selected_rows_data, template_filename=TEMPLATE_FILE):
+@st.cache_data(show_spinner=False)
+def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TEMPLATE_FILE):
+    selected_rows_data = [dict(r) for r in selected_rows_tuple]
     if not os.path.exists(template_filename):
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -970,8 +972,10 @@ try:
             summary_labels = [f"NO.{r.get('NO.', '')} ({r.get('제품명', '')})" for r in selected_rows]
             st.caption(f"선택 항목: {', '.join(summary_labels[:8])}{' 외 ' + str(len(summary_labels)-8) + '건' if len(summary_labels) > 8 else ''}")
 
+            # [최적화 핵심] 캐시된 함수(cached_generate_multi_repair_excel)를 사용하여 체크박스 선택 시 딜레이 제거
             try:
-                multi_excel_bytes = generate_multi_repair_excel(selected_rows)
+                rows_tuple = tuple(tuple(sorted(r.items())) for r in selected_rows)
+                multi_excel_bytes = cached_generate_multi_repair_excel(rows_tuple, TEMPLATE_FILE)
                 st.download_button(
                     label=f"📥 선택한 {len(selected_rows)}건 수리 REPORT 엑셀 다운로드",
                     data=multi_excel_bytes,
@@ -1025,7 +1029,7 @@ try:
             min_d = valid_dates.min().date() if not valid_dates.empty else datetime(2026, 1, 1).date()
             max_d = valid_dates.max().date() if not valid_dates.empty else datetime.now().date()
             with f_col2: start_date = st.date_input("시작일", value=min_d)
-            with f_col3: end_date = st.date_input("종료일", value=max_d)
+            with f_col3: end_date = st.date_input(" 종료일", value=max_d)
 
         with f_col4:
             cost_options = ["전체 (유/무상)", "무상", "유상", "미기재/기타"]
