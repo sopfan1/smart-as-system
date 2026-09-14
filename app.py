@@ -4,7 +4,6 @@ import sqlite3
 import io
 import os
 import math
-import copy
 from datetime import datetime, timedelta
 import openpyxl
 from openpyxl.styles import PatternFill, Alignment, Border, Side
@@ -75,7 +74,34 @@ DATE_FIELDS = [
 ]
 
 # -------------------------------------------------------------
-# [2. 보조 함수]
+# [2. 데이터베이스 자동 초기화 함수]
+# -------------------------------------------------------------
+def init_db():
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS as_data (
+            NO. TEXT, 접수일 TEXT, 발생일 TEXT, 제조처 TEXT, 접수처 TEXT, 
+            프로젝트 TEXT, 제품명 TEXT, 제품 S/N TEXT, 위치 TEXT, 접수횟수 TEXT, 
+            유/무상 TEXT, 접수내역 TEXT, 확인내역 TEXT, 
+            1차_육안 TEXT, 1차_육안_일자 TEXT, 1차_특성 TEXT, 1차_특성_일자 TEXT, 
+            1차_조합 TEXT, 1차_조합_일자 TEXT, 1차_AGING TEXT, 1차_AGING_일자 TEXT, 
+            1차_FULL부하 TEXT, 1차_FULL부하_일자 TEXT, 
+            재검_육안 TEXT, 재검_육안_일자 TEXT, 재검_특성 TEXT, 재검_특성_일자 TEXT, 
+            재검_조합 TEXT, 재검_조합_일자 TEXT, 재검_AGING TEXT, 재검_AGING_일자 TEXT, 
+            재검_FULL부하 TEXT, 재검_FULL부하_일자 TEXT, 
+            불량원인 TEXT, 수리내역 TEXT, F/W TEXT, BASE PBA S/N TEXT, SMPS S/N TEXT, 
+            MAC TEXT, 투입부품1 TEXT, 부품1 수량 TEXT, 투입부품2 TEXT, 부품2 수량 TEXT, 
+            투입부품3 TEXT, 부품3 수량 TEXT, 투입부품4 TEXT, 부품4 수량 TEXT, 
+            교체 (전) S/N TEXT, 교체(후) S/N TEXT, 처리결과 TEXT, 담당자 TEXT, 
+            완료일자 TEXT, 인계일자 TEXT, 비고 TEXT, 확인내역_사진 TEXT, 수리내역_사진 TEXT
+        )
+    ''')
+    conn.commit()
+
+init_db()
+
+# -------------------------------------------------------------
+# [3. 보조 함수]
 # -------------------------------------------------------------
 def clean_date_str(val):
     if pd.isna(val): return ""
@@ -136,7 +162,12 @@ def calculate_reception_counts(df_to_calc):
     return df_to_calc
 
 def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
-    df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
+    try:
+        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
+    except:
+        init_db()
+        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
+        
     for col in EXCEL_FIELDS:
         if col not in df.columns: df[col] = ""
     ed_df = df[['rowid_val'] + EXCEL_FIELDS].copy()
@@ -150,7 +181,7 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
         ed_df[col] = ed_df[col].apply(lambda x: x if x in ['PASS', 'FAIL'] else "")
         
     if order_mode.startswith("최신순"):
-        ed_df = ed_df.iloc[::-1].reset_index(drop=False)  # 인덱스 유지를 위해 drop=False 적용
+        ed_df = ed_df.iloc[::-1].reset_index(drop=False)
     else:
         ed_df = ed_df.reset_index(drop=False)
     return ed_df
@@ -504,7 +535,7 @@ def generate_multi_repair_excel(selected_rows_data, template_filename=TEMPLATE_F
     return out_buf.getvalue()
 
 # -------------------------------------------------------------
-# [3. 대시보드 UI 영역]
+# [4. 대시보드 UI 영역]
 # -------------------------------------------------------------
 st.title("🏢 Smart AS Management & KPI System")
 
@@ -736,7 +767,6 @@ try:
             "비고": st.column_config.TextColumn("비고")
         }
 
-        # [핵심 수정] 인덱스를 고정한 상태로 에디터 렌더링 (엔터 및 타이핑 시 NO.1로 튀는 현상 완벽 방지)
         editor_df = st.session_state["display_df"][['선택'] + EXCEL_FIELDS].copy()
         
         edited_df = st.data_editor(
@@ -1035,7 +1065,7 @@ try:
             else:
                 st.info("데이터가 없습니다.")
 
-        with c_col4:
+        c_col4:
             st.markdown("##### ⚙️ 주요 투입 교체 부품 (Top 5)")
             parts_list = []
             for c in ['투입부품1', '투입부품2', '투입부품3', '투입부품4']:
