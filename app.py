@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 관리대장 & KPI 분석")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 관리대장 & 권한 관리")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -71,11 +71,10 @@ DATE_FIELDS = [
 ]
 
 # -------------------------------------------------------------
-# [2. 데이터베이스 자동 초기화 함수 (특수문자 방어)]
+# [2. 데이터베이스 자동 초기화 함수]
 # -------------------------------------------------------------
 def init_db():
     cursor = conn.cursor()
-    # SQL 예약어 및 특수문자 컬럼 충돌 방지를 위해 따옴표 감싸기
     columns_def = ", ".join([f'"{col}" TEXT' for col in EXCEL_FIELDS])
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS as_data (
@@ -521,8 +520,28 @@ def generate_multi_repair_excel(selected_rows_data, template_filename=TEMPLATE_F
     return out_buf.getvalue()
 
 # -------------------------------------------------------------
-# [4. 대시보드 UI 영역]
+# [4. 사이드바 로그인 및 권한 관리 시스템 (jwko / qcteam12!)]
 # -------------------------------------------------------------
+st.sidebar.title("🔐 사용자 인증 및 권한")
+auth_mode = st.sidebar.radio("접속 모드 선택", ["일반 사용자 (조회/REPORT 출력)", "마스터 관리자 (등록/수정 권한)"])
+
+is_master = False
+if auth_mode == "마스터 관리자 (등록/수정 권한)":
+    input_id = st.sidebar.text_input("관리자 ID 입력", value="")
+    input_pw = st.sidebar.text_input("관리자 비밀번호 입력", type="password", value="")
+    
+    if input_id == "jwko" and input_pw == "qcteam12!":
+        is_master = True
+        st.sidebar.success("✅ 마스터 관리자 인증 완료 (수정/등록 가능)")
+    else:
+        if input_id or input_pw:
+            st.sidebar.error("❌ ID 또는 비밀번호가 일치하지 않습니다.")
+        else:
+            st.sidebar.warning("⚠️ 관리자 ID와 비밀번호를 입력하세요.")
+        is_master = False
+else:
+    st.sidebar.info("👁️ 일반 사용자 모드: 대장 조회 및 수리 REPORT 발행만 가능합니다.")
+
 st.title("🏢 Smart AS Management & KPI System")
 
 if "last_order" not in st.session_state:
@@ -533,51 +552,53 @@ if "display_df" not in st.session_state or st.session_state["display_df"] is Non
     if '선택' not in st.session_state["display_df"].columns:
         st.session_state["display_df"].insert(0, '선택', False)
 
-with st.expander("📥 엑셀 파일 업로드 및 DB 동기화", expanded=False):
-    uploaded_file = st.file_uploader("AS관리대장 엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"], key="excel_uploader")
-    if uploaded_file is not None and st.button("🚀 엑셀 데이터 DB로 자동 기입"):
-        try:
-            excel_df = pd.read_excel(uploaded_file)
-            excel_df.columns = [str(c).strip() for c in excel_df.columns]
-            rename_dict = {}
-            for col in excel_df.columns:
-                clean_name = col.replace(" ", "").upper()
-                if clean_name in ['NO.', 'NO', '순번', '번호', 'INDEX']:
-                    rename_dict[col] = 'NO.'
-                    break
-            if rename_dict: excel_df.rename(columns=rename_dict, inplace=True)
-            for col in EXCEL_FIELDS:
-                if col not in excel_df.columns: excel_df[col] = ""
-            
-            excel_df['NO.'] = [str(safe_int_no(v)) if safe_int_no(v) is not None else str(i+1) for i, v in enumerate(excel_df['NO.'])]
-            for col in DATE_FIELDS:
-                if col in excel_df.columns: excel_df[col] = excel_df[col].apply(clean_date_str)
-            excel_df = calculate_reception_counts(excel_df)
-            final_import_df = excel_df[EXCEL_FIELDS].fillna("").astype(str)
-            final_import_df.to_sql("as_data", conn, if_exists="replace", index=False)
-            
-            st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
-            if '선택' not in st.session_state["display_df"].columns:
-                st.session_state["display_df"].insert(0, '선택', False)
-            st.success("데이터베이스에 정상 반영되었습니다.")
-            st.rerun()
-        except Exception as ex:
-            st.error(f"오류: {ex}")
-
-    st.markdown("---")
-    if st.button("⚠️ 모든 관리대장 데이터 전체 초기화 (처음부터 다시 시작)", type="secondary"):
-        try:
-            conn.execute("DELETE FROM as_data")
-            conn.commit()
-            
-            st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
-            if '선택' not in st.session_state["display_df"].columns:
-                st.session_state["display_df"].insert(0, '선택', False)
+# 마스터 관리자만 엑셀 업로드 및 전체 초기화 가능
+if is_master:
+    with st.expander("📥 [관리자 전용] 엑셀 파일 업로드 및 DB 동기화", expanded=False):
+        uploaded_file = st.file_uploader("AS관리대장 엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"], key="excel_uploader")
+        if uploaded_file is not None and st.button("🚀 엑셀 데이터 DB로 자동 기입"):
+            try:
+                excel_df = pd.read_excel(uploaded_file)
+                excel_df.columns = [str(c).strip() for c in excel_df.columns]
+                rename_dict = {}
+                for col in excel_df.columns:
+                    clean_name = col.replace(" ", "").upper()
+                    if clean_name in ['NO.', 'NO', '순번', '번호', 'INDEX']:
+                        rename_dict[col] = 'NO.'
+                        break
+                if rename_dict: excel_df.rename(columns=rename_dict, inplace=True)
+                for col in EXCEL_FIELDS:
+                    if col not in excel_df.columns: excel_df[col] = ""
                 
-            st.toast("🗑️ 모든 데이터가 성공적으로 초기화되었습니다.", icon="✅")
-            st.rerun()
-        except Exception as reset_err:
-            st.error(f"초기화 중 오류 발생: {reset_err}")
+                excel_df['NO.'] = [str(safe_int_no(v)) if safe_int_no(v) is not None else str(i+1) for i, v in enumerate(excel_df['NO.'])]
+                for col in DATE_FIELDS:
+                    if col in excel_df.columns: excel_df[col] = excel_df[col].apply(clean_date_str)
+                excel_df = calculate_reception_counts(excel_df)
+                final_import_df = excel_df[EXCEL_FIELDS].fillna("").astype(str)
+                final_import_df.to_sql("as_data", conn, if_exists="replace", index=False)
+                
+                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                if '선택' not in st.session_state["display_df"].columns:
+                    st.session_state["display_df"].insert(0, '선택', False)
+                st.success("데이터베이스에 정상 반영되었습니다.")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"오류: {ex}")
+
+        st.markdown("---")
+        if st.button("⚠️ 모든 관리대장 데이터 전체 초기화 (처음부터 다시 시작)", type="secondary"):
+            try:
+                conn.execute("DELETE FROM as_data")
+                conn.commit()
+                
+                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                if '선택' not in st.session_state["display_df"].columns:
+                    st.session_state["display_df"].insert(0, '선택', False)
+                    
+                st.toast("🗑️ 모든 데이터가 성공적으로 초기화되었습니다.", icon="✅")
+                st.rerun()
+            except Exception as reset_err:
+                st.error(f"초기화 중 오류 발생: {reset_err}")
 
 try:
     tab1, tab2 = st.tabs(["📝 AS 관리대장 & 수리 REPORT 발행", "📊 2026년 KPI 데이터 분석"])
@@ -586,119 +607,122 @@ try:
     # [TAB 1: 관리대장 및 수리 REPORT 발행]
     # =============================================================
     with tab1:
-        with st.expander("➕ 신규 AS 접수 데이터 즉시 등록", expanded=False):
-            with st.form("new_as_entry_form", clear_on_submit=True):
-                st.markdown("##### 📝 신규 접수 기본 정보 입력")
-                n_c1, n_c2, n_c3, n_c4 = st.columns(4)
-                with n_c1:
-                    new_date = st.text_input("접수일", value=datetime.now().strftime('%Y-%m-%d'))
-                    new_project = st.text_input("프로젝트", placeholder="예: SCAM 모듈")
-                with n_c2:
-                    new_prod_name = st.text_input("제품명", placeholder="예: CPU PBA")
-                    new_sn = st.text_input("제품 S/N", placeholder="제품 일련번호")
-                with n_c3:
-                    new_client = st.text_input("접수처", placeholder="고객사/협력사")
-                    new_cost = st.selectbox("유/무상", ["무상", "유상", "기타"], index=0)
-                with n_c4:
-                    new_manager = st.text_input("담당자", placeholder="처리 담당자명")
-                    new_res = st.text_input("처리결과", value="접수")
+        if is_master:
+            with st.expander("➕ [관리자 전용] 신규 AS 접수 데이터 즉시 등록", expanded=False):
+                with st.form("new_as_entry_form", clear_on_submit=True):
+                    st.markdown("##### 📝 신규 접수 기본 정보 입력")
+                    n_c1, n_c2, n_c3, n_c4 = st.columns(4)
+                    with n_c1:
+                        new_date = st.text_input("접수일", value=datetime.now().strftime('%Y-%m-%d'))
+                        new_project = st.text_input("프로젝트", placeholder="예: SCAM 모듈")
+                    with n_c2:
+                        new_prod_name = st.text_input("제품명", placeholder="예: CPU PBA")
+                        new_sn = st.text_input("제품 S/N", placeholder="제품 일련번호")
+                    with n_c3:
+                        new_client = st.text_input("접수처", placeholder="고객사/협력사")
+                        new_cost = st.selectbox("유/무상", ["무상", "유상", "기타"], index=0)
+                    with n_c4:
+                        new_manager = st.text_input("담당자", placeholder="처리 담당자명")
+                        new_res = st.text_input("처리결과", value="접수")
 
-                st.markdown("##### 🔍 상세 증상 및 수리 조치")
-                nd_c1, nd_c2 = st.columns(2)
-                with nd_c1:
-                    new_recept_desc = st.text_area("접수내역", height=70)
-                    new_defect_cause = st.text_area("불량원인", height=70)
-                with nd_c2:
-                    new_check_desc = st.text_area("확인내역", height=70)
-                    new_repair_desc = st.text_area("수리내역", height=70)
+                    st.markdown("##### 🔍 상세 증상 및 수리 조치")
+                    nd_c1, nd_c2 = st.columns(2)
+                    with nd_c1:
+                        new_recept_desc = st.text_area("접수내역", height=70)
+                        new_defect_cause = st.text_area("불량원인", height=70)
+                    with nd_c2:
+                        new_check_desc = st.text_area("확인내역", height=70)
+                        new_repair_desc = st.text_area("수리내역", height=70)
 
-                submit_btn = st.form_submit_button("🚀 신규 데이터 등록")
+                    submit_btn = st.form_submit_button("🚀 신규 데이터 등록")
 
-                if submit_btn:
-                    if not new_sn.strip() and not new_prod_name.strip():
-                        st.warning("제품명 또는 제품 S/N을 최소 1개 이상 입력해 주세요.")
-                    else:
-                        current_all_df = load_fresh_db_data(st.session_state["last_order"])
-                        int_nos = [safe_int_no(v) for v in current_all_df['NO.']]
-                        valid_nos = [x for x in int_nos if x is not None]
-                        next_no = (max(valid_nos) + 1) if valid_nos else 1
+                    if submit_btn:
+                        if not new_sn.strip() and not new_prod_name.strip():
+                            st.warning("제품명 또는 제품 S/N을 최소 1개 이상 입력해 주세요.")
+                        else:
+                            current_all_df = load_fresh_db_data(st.session_state["last_order"])
+                            int_nos = [safe_int_no(v) for v in current_all_df['NO.']]
+                            valid_nos = [x for x in int_nos if x is not None]
+                            next_no = (max(valid_nos) + 1) if valid_nos else 1
 
-                        new_entry = {col: "" for col in EXCEL_FIELDS}
-                        new_entry['NO.'] = str(next_no)
-                        new_entry['접수일'] = clean_date_str(new_date)
-                        new_entry['프로젝트'] = str(new_project).strip()
-                        new_entry['제품명'] = str(new_prod_name).strip()
-                        new_entry['제품 S/N'] = str(new_sn).strip()
-                        new_entry['접수처'] = str(new_client).strip()
-                        new_entry['유/무상'] = str(new_cost).strip()
-                        new_entry['담당자'] = str(new_manager).strip()
-                        new_entry['처리결과'] = str(new_res).strip()
-                        new_entry['접수내역'] = str(new_recept_desc).strip()
-                        new_entry['확인내역'] = str(new_check_desc).strip()
-                        new_entry['불량원인'] = str(new_defect_cause).strip()
-                        new_entry['수리내역'] = str(new_repair_desc).strip()
+                            new_entry = {col: "" for col in EXCEL_FIELDS}
+                            new_entry['NO.'] = str(next_no)
+                            new_entry['접수일'] = clean_date_str(new_date)
+                            new_entry['프로젝트'] = str(new_project).strip()
+                            new_entry['제품명'] = str(new_prod_name).strip()
+                            new_entry['제품 S/N'] = str(new_sn).strip()
+                            new_entry['접수처'] = str(new_client).strip()
+                            new_entry['유/무상'] = str(new_cost).strip()
+                            new_entry['담당자'] = str(new_manager).strip()
+                            new_entry['처리결과'] = str(new_res).strip()
+                            new_entry['접수내역'] = str(new_recept_desc).strip()
+                            new_entry['확인내역'] = str(new_check_desc).strip()
+                            new_entry['불량원인'] = str(new_defect_cause).strip()
+                            new_entry['수리내역'] = str(new_repair_desc).strip()
 
-                        new_row_df = pd.DataFrame([new_entry])
-                        combined_df = pd.concat([current_all_df[EXCEL_FIELDS], new_row_df], ignore_index=True)
-                        combined_df = calculate_reception_counts(combined_df)
+                            new_row_df = pd.DataFrame([new_entry])
+                            combined_df = pd.concat([current_all_df[EXCEL_FIELDS], new_row_df], ignore_index=True)
+                            combined_df = calculate_reception_counts(combined_df)
 
-                        combined_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
-                        
-                        st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
-                        if '선택' not in st.session_state["display_df"].columns:
-                            st.session_state["display_df"].insert(0, '선택', False)
-                        st.toast(f"✅ NO.{next_no} 등록 완료!", icon="🎉")
-                        st.rerun()
+                            combined_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
+                            
+                            st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                            if '선택' not in st.session_state["display_df"].columns:
+                                st.session_state["display_df"].insert(0, '선택', False)
+                            st.toast(f"✅ NO.{next_no} 등록 완료!", icon="🎉")
+                            st.rerun()
 
-        with st.expander("📷 특정 접수 건 사진 등록 및 삭제", expanded=False):
-            fresh_check = load_fresh_db_data(st.session_state["last_order"])
-            if not fresh_check.empty:
-                valid_photo_nos = [str(v) for v in fresh_check['NO.'].tolist() if str(v).strip()]
-                if valid_photo_nos:
-                    sel_no = st.selectbox("사진 관리할 접수 NO. 선택:", valid_photo_nos, key="sel_no_box")
-                    target_matches = fresh_check[fresh_check['NO.'] == sel_no]
-                    if not target_matches.empty:
-                        target_idx = target_matches.index[0]
-                        cur_p1 = fresh_check.loc[target_idx, '확인내역_사진']
-                        cur_p2 = fresh_check.loc[target_idx, '수리내역_사진']
-                        
-                        st.caption(f"📌 **NO.{sel_no} 현재 등록 상태** — 불량증상 사진: {'[등록됨]' if cur_p1 else '[없음]'} | 수리내역 사진: {'[등록됨]' if cur_p2 else '[없음]'}")
+            with st.expander("📷 [관리자 전용] 특정 접수 건 사진 등록 및 삭제", expanded=False):
+                fresh_check = load_fresh_db_data(st.session_state["last_order"])
+                if not fresh_check.empty:
+                    valid_photo_nos = [str(v) for v in fresh_check['NO.'].tolist() if str(v).strip()]
+                    if valid_photo_nos:
+                        sel_no = st.selectbox("사진 관리할 접수 NO. 선택:", valid_photo_nos, key="sel_no_box")
+                        target_matches = fresh_check[fresh_check['NO.'] == sel_no]
+                        if not target_matches.empty:
+                            target_idx = target_matches.index[0]
+                            cur_p1 = fresh_check.loc[target_idx, '확인내역_사진']
+                            cur_p2 = fresh_check.loc[target_idx, '수리내역_사진']
+                            
+                            st.caption(f"📌 **NO.{sel_no} 현재 등록 상태** — 불량증상 사진: {'[등록됨]' if cur_p1 else '[없음]'} | 수리내역 사진: {'[등록됨]' if cur_p2 else '[없음]'}")
 
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            up_img1 = st.file_uploader(f"NO.{sel_no} 불량 증상 사진 업로드", type=["png", "jpg", "jpeg"], key=f"p1_{sel_no}")
-                        with c2:
-                            up_img2 = st.file_uploader(f"NO.{sel_no} 수리 내역 사진 업로드", type=["png", "jpg", "jpeg"], key=f"p2_{sel_no}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                up_img1 = st.file_uploader(f"NO.{sel_no} 불량 증상 사진 업로드", type=["png", "jpg", "jpeg"], key=f"p1_{sel_no}")
+                            with c2:
+                                up_img2 = st.file_uploader(f"NO.{sel_no} 수리 내역 사진 업로드", type=["png", "jpg", "jpeg"], key=f"p2_{sel_no}")
 
-                        sc1, sc2 = st.columns(2)
-                        with sc1:
-                            if st.button("💾 사진 DB 저장 / 갱신"):
-                                if up_img1:
-                                    path1 = os.path.join(IMG_DIR, f"defect_{sel_no}_{datetime.now().strftime('%H%M%S')}.jpg")
-                                    with open(path1, "wb") as f: f.write(up_img1.getbuffer())
-                                    fresh_check.at[target_idx, '확인내역_사진'] = path1
-                                if up_img2:
-                                    path2 = os.path.join(IMG_DIR, f"repair_{sel_no}_{datetime.now().strftime('%H%M%S')}.jpg")
-                                    with open(path2, "wb") as f: f.write(up_img2.getbuffer())
-                                    fresh_check.at[target_idx, '수리내역_사진'] = path2
-                                
-                                fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
-                                if '선택' not in st.session_state["display_df"].columns:
-                                    st.session_state["display_df"].insert(0, '선택', False)
-                                st.toast("사진이 정상 저장되었습니다!", icon="✅")
-                                st.rerun()
+                            sc1, sc2 = st.columns(2)
+                            with sc1:
+                                if st.button("💾 사진 DB 저장 / 갱신"):
+                                    if up_img1:
+                                        path1 = os.path.join(IMG_DIR, f"defect_{sel_no}_{datetime.now().strftime('%H%M%S')}.jpg")
+                                        with open(path1, "wb") as f: f.write(up_img1.getbuffer())
+                                        fresh_check.at[target_idx, '확인내역_사진'] = path1
+                                    if up_img2:
+                                        path2 = os.path.join(IMG_DIR, f"repair_{sel_no}_{datetime.now().strftime('%H%M%S')}.jpg")
+                                        with open(path2, "wb") as f: f.write(up_img2.getbuffer())
+                                        fresh_check.at[target_idx, '수리내역_사진'] = path2
+                                    
+                                    fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
+                                    st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                                    if '선택' not in st.session_state["display_df"].columns:
+                                        st.session_state["display_df"].insert(0, '선택', False)
+                                    st.toast("사진이 정상 저장되었습니다!", icon="✅")
+                                    st.rerun()
 
-                        with sc2:
-                            if st.button("🗑️ 등록된 사진 전체 삭제"):
-                                fresh_check.at[target_idx, '확인내역_사진'] = ""
-                                fresh_check.at[target_idx, '수리내역_사진'] = ""
-                                fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
-                                if '선택' not in st.session_state["display_df"].columns:
-                                    st.session_state["display_df"].insert(0, '선택', False)
-                                st.toast("해당 건의 사진이 모두 삭제되었습니다.", icon="🗑️")
-                                st.rerun()
+                            with sc2:
+                                if st.button("🗑️ 등록된 사진 전체 삭제"):
+                                    fresh_check.at[target_idx, '확인내역_사진'] = ""
+                                    fresh_check.at[target_idx, '수리내역_사진'] = ""
+                                    fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
+                                    st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                                    if '선택' not in st.session_state["display_df"].columns:
+                                        st.session_state["display_df"].insert(0, '선택', False)
+                                    st.toast("해당 건의 사진이 모두 삭제되었습니다.", icon="🗑️")
+                                    st.rerun()
+        else:
+            st.info("ℹ️ 현재 **일반 사용자 모드**입니다. 신규 등록 및 데이터 수정은 사이드바에서 마스터 계정(`jwko`)으로 로그인 후 가능합니다.")
 
         ctrl1, _ = st.columns([3, 7])
         with ctrl1:
@@ -711,40 +735,43 @@ try:
                 st.session_state["display_df"].insert(0, '선택', False)
             st.rerun()
 
-        st.markdown("#### 📋 AS관리대장 (엔터 입력 및 타이핑 안정화 모드 완료)")
+        if is_master:
+            st.markdown("#### 📋 AS관리대장 (관리자 편집 모드)")
+        else:
+            st.markdown("#### 📋 AS관리대장 (조회 전용 모드)")
 
         pass_fail_options = ["", "PASS", "FAIL"]
         
         column_config = {
             "선택": st.column_config.CheckboxColumn("선택", help="수리 REPORT 발행 시 체크", default=False),
-            "NO.": st.column_config.TextColumn("NO.", help="신규 행 추가 시 비워두면 자동 채번됩니다."),
+            "NO.": st.column_config.TextColumn("NO.", disabled=not is_master),
             "접수횟수": st.column_config.TextColumn("접수횟수", disabled=True),
-            "1차_육안": st.column_config.SelectboxColumn("1차_육안", options=pass_fail_options, required=False),
-            "1차_육안_일자": st.column_config.TextColumn("1차_육안_일자"),
-            "1차_특성": st.column_config.SelectboxColumn("1차_특성", options=pass_fail_options, required=False),
-            "1차_특성_일자": st.column_config.TextColumn("1차_특성_일자"),
-            "1차_조합": st.column_config.SelectboxColumn("1차_조합", options=pass_fail_options, required=False),
-            "1차_조합_일자": st.column_config.TextColumn("1차_조합_일자"),
-            "1차_AGING": st.column_config.SelectboxColumn("1차_AGING", options=pass_fail_options, required=False),
-            "1차_AGING_일자": st.column_config.TextColumn("1차_AGING_일자", help="시작일 입력 시 +2일 자동 계산"),
-            "1차_FULL부하": st.column_config.SelectboxColumn("1차_FULL부하", options=pass_fail_options, required=False),
-            "1차_FULL부하_일자": st.column_config.TextColumn("1차_FULL부하_일자"),
-            "재검_육안": st.column_config.SelectboxColumn("🟡 재검_육안", options=pass_fail_options, required=False, help="2차 재검사 판정"),
-            "재검_육안_일자": st.column_config.TextColumn("🟡 재검_육안_일자"),
-            "재검_특성": st.column_config.SelectboxColumn("🟡 재검_특성", options=pass_fail_options, required=False, help="2차 재검사 판정"),
-            "재검_특성_일자": st.column_config.TextColumn("🟡 재검_특성_일자"),
-            "재검_조합": st.column_config.SelectboxColumn("🟡 재검_조합", options=pass_fail_options, required=False, help="2차 재검사 판정"),
-            "재검_조합_일자": st.column_config.TextColumn("🟡 재검_조합_일자"),
-            "재검_AGING": st.column_config.SelectboxColumn("🟡 재검_AGING", options=pass_fail_options, required=False, help="2차 재검사 판정"),
-            "재검_AGING_일자": st.column_config.TextColumn("🟡 재검_AGING_일자", help="시작일 입력 시 +2일 자동 계산"),
-            "재검_FULL부하": st.column_config.SelectboxColumn("🟡 재검_FULL부하", options=pass_fail_options, required=False, help="2차 재검사 판정"),
-            "재검_FULL부하_일자": st.column_config.TextColumn("🟡 재검_FULL부하_일자"),
-            "확인내역": st.column_config.TextColumn("확인내역"),
-            "불량원인": st.column_config.TextColumn("불량원인"),
-            "수리내역": st.column_config.TextColumn("수리내역"),
-            "완료일자": st.column_config.TextColumn("완료일자"),
-            "인계일자": st.column_config.TextColumn("인계일자"),
-            "비고": st.column_config.TextColumn("비고")
+            "1차_육안": st.column_config.SelectboxColumn("1차_육안", options=pass_fail_options, required=False, disabled=not is_master),
+            "1차_육안_일자": st.column_config.TextColumn("1차_육안_일자", disabled=not is_master),
+            "1차_특성": st.column_config.SelectboxColumn("1차_특성", options=pass_fail_options, required=False, disabled=not is_master),
+            "1차_특성_일자": st.column_config.TextColumn("1차_특성_일자", disabled=not is_master),
+            "1차_조합": st.column_config.SelectboxColumn("1차_조합", options=pass_fail_options, required=False, disabled=not is_master),
+            "1차_조합_일자": st.column_config.TextColumn("1차_조합_일자", disabled=not is_master),
+            "1차_AGING": st.column_config.SelectboxColumn("1차_AGING", options=pass_fail_options, required=False, disabled=not is_master),
+            "1차_AGING_일자": st.column_config.TextColumn("1차_AGING_일자", disabled=not is_master),
+            "1차_FULL부하": st.column_config.SelectboxColumn("1차_FULL부하", options=pass_fail_options, required=False, disabled=not is_master),
+            "1차_FULL부하_일자": st.column_config.TextColumn("1차_FULL부하_일자", disabled=not is_master),
+            "재검_육안": st.column_config.SelectboxColumn("🟡 재검_육안", options=pass_fail_options, required=False, disabled=not is_master),
+            "재검_육안_일자": st.column_config.TextColumn("🟡 재검_육안_일자", disabled=not is_master),
+            "재검_특성": st.column_config.SelectboxColumn("🟡 재검_특성", options=pass_fail_options, required=False, disabled=not is_master),
+            "재검_특성_일자": st.column_config.TextColumn("🟡 재검_특성_일자", disabled=not is_master),
+            "재검_조합": st.column_config.SelectboxColumn("🟡 재검_조합", options=pass_fail_options, required=False, disabled=not is_master),
+            "재검_조합_일자": st.column_config.TextColumn("🟡 재검_조합_일자", disabled=not is_master),
+            "재검_AGING": st.column_config.SelectboxColumn("🟡 재검_AGING", options=pass_fail_options, required=False, disabled=not is_master),
+            "재검_AGING_일자": st.column_config.TextColumn("🟡 재검_AGING_일자", disabled=not is_master),
+            "재검_FULL부하": st.column_config.SelectboxColumn("🟡 재검_FULL부하", options=pass_fail_options, required=False, disabled=not is_master),
+            "재검_FULL부하_일자": st.column_config.TextColumn("🟡 재검_FULL부하_일자", disabled=not is_master),
+            "확인내역": st.column_config.TextColumn("확인내역", disabled=not is_master),
+            "불량원인": st.column_config.TextColumn("불량원인", disabled=not is_master),
+            "수리내역": st.column_config.TextColumn("수리내역", disabled=not is_master),
+            "완료일자": st.column_config.TextColumn("완료일자", disabled=not is_master),
+            "인계일자": st.column_config.TextColumn("인계일자", disabled=not is_master),
+            "비고": st.column_config.TextColumn("비고", disabled=not is_master)
         }
 
         editor_df = st.session_state["display_df"][['선택'] + EXCEL_FIELDS].copy()
@@ -754,8 +781,8 @@ try:
             column_config=column_config,
             hide_index=True,
             height=850,
-            num_rows="dynamic",
-            key="stable_as_table_editor_v3"
+            num_rows="dynamic" if is_master else "fixed",
+            key="stable_as_table_editor_v4"
         )
 
         st.session_state["display_df"][['선택'] + EXCEL_FIELDS] = edited_df.copy()
@@ -763,132 +790,138 @@ try:
         b_col1, b_col2, b_col3 = st.columns([3, 3, 4])
         
         with b_col1:
-            if st.button("💾 표에서 수정한 내용 DB에 영구 저장"):
-                try:
-                    existing_db_df = load_fresh_db_data(current_order)
-                    photo_map = {}
-                    if not existing_db_df.empty:
-                        for _, row in existing_db_df.iterrows():
-                            no_key = str(row.get('NO.', '')).strip()
-                            sn_key = str(row.get('제품 S/N', '')).strip()
-                            photo_map[(no_key, sn_key)] = (row.get('확인내역_사진', ''), row.get('수리내역_사진', ''))
+            if is_master:
+                if st.button("💾 표에서 수정한 내용 DB에 영구 저장"):
+                    try:
+                        existing_db_df = load_fresh_db_data(current_order)
+                        photo_map = {}
+                        if not existing_db_df.empty:
+                            for _, row in existing_db_df.iterrows():
+                                no_key = str(row.get('NO.', '')).strip()
+                                sn_key = str(row.get('제품 S/N', '')).strip()
+                                photo_map[(no_key, sn_key)] = (row.get('확인내역_사진', ''), row.get('수리내역_사진', ''))
 
-                    raw_save_df = edited_df[EXCEL_FIELDS].copy()
-                    if current_order.startswith("최신순"):
-                        raw_save_df = raw_save_df.iloc[::-1].reset_index(drop=True)
+                        raw_save_df = edited_df[EXCEL_FIELDS].copy()
+                        if current_order.startswith("최신순"):
+                            raw_save_df = raw_save_df.iloc[::-1].reset_index(drop=True)
 
-                    meaningful_cols = ['접수일', '프로젝트', '제품명', '제품 S/N', '접수내역', '확인내역']
-                    valid_rows = []
-                    today_str = datetime.now().strftime('%Y-%m-%d')
+                        meaningful_cols = ['접수일', '프로젝트', '제품명', '제품 S/N', '접수내역', '확인내역']
+                        valid_rows = []
+                        today_str = datetime.now().strftime('%Y-%m-%d')
 
-                    for _, row in raw_save_df.iterrows():
-                        row_dict = row.to_dict()
-                        has_data = any(str(row_dict.get(col, '')).strip() != '' and str(row_dict.get(col, '')).strip().lower() not in ['nan', 'none'] for col in meaningful_cols)
+                        for _, row in raw_save_df.iterrows():
+                            row_dict = row.to_dict()
+                            has_data = any(str(row_dict.get(col, '')).strip() != '' and str(row_dict.get(col, '')).strip().lower() not in ['nan', 'none'] for col in meaningful_cols)
 
-                        if has_data:
-                            no_key = str(row_dict.get('NO.', '')).strip()
-                            sn_key = str(row_dict.get('제품 S/N', '')).strip()
-                            
-                            if (no_key, sn_key) in photo_map:
-                                if not str(row_dict.get('확인내역_사진', '')).strip():
-                                    row_dict['확인내역_사진'] = photo_map[(no_key, sn_key)][0]
-                                if not str(row_dict.get('수리내역_사진', '')).strip():
-                                    row_dict['수리내역_사진'] = photo_map[(no_key, sn_key)][1]
+                            if has_data:
+                                no_key = str(row_dict.get('NO.', '')).strip()
+                                sn_key = str(row_dict.get('제품 S/N', '')).strip()
+                                
+                                if (no_key, sn_key) in photo_map:
+                                    if not str(row_dict.get('확인내역_사진', '')).strip():
+                                        row_dict['확인내역_사진'] = photo_map[(no_key, sn_key)][0]
+                                    if not str(row_dict.get('수리내역_사진', '')).strip():
+                                        row_dict['수리내역_사진'] = photo_map[(no_key, sn_key)][1]
 
-                            for test_k, date_k in INSPECT_1ST_PAIRS.items():
-                                cur_val = str(row_dict.get(test_k, '')).strip().upper()
-                                cur_date = clean_date_str(row_dict.get(date_k, ''))
-                                if cur_val in ['PASS', 'FAIL']:
-                                    if not cur_date: row_dict[date_k] = today_str
+                                for test_k, date_k in INSPECT_1ST_PAIRS.items():
+                                    cur_val = str(row_dict.get(test_k, '')).strip().upper()
+                                    cur_date = clean_date_str(row_dict.get(date_k, ''))
+                                    if cur_val in ['PASS', 'FAIL']:
+                                        if not cur_date: row_dict[date_k] = today_str
+                                    else:
+                                        if not cur_val: row_dict[date_k] = ""
+
+                                for test_k, date_k in INSPECT_2ND_PAIRS.items():
+                                    cur_val = str(row_dict.get(test_k, '')).strip().upper()
+                                    cur_date = clean_date_str(row_dict.get(date_k, ''))
+                                    if cur_val in ['PASS', 'FAIL']:
+                                        if not cur_date: row_dict[date_k] = today_str
+                                    else:
+                                        if not cur_val: row_dict[date_k] = ""
+
+                                valid_rows.append(row_dict)
+
+                        if not valid_rows:
+                            st.warning("저장할 유효 데이터가 없습니다.")
+                        else:
+                            processed_df = pd.DataFrame(valid_rows, columns=EXCEL_FIELDS)
+
+                            int_nos = [safe_int_no(v) for v in processed_df['NO.']]
+                            valid_existing = [x for x in int_nos if x is not None]
+                            max_existing_no = max(valid_existing) if valid_existing else 0
+
+                            final_no_list = []
+                            for v in int_nos:
+                                if v is None:
+                                    max_existing_no += 1
+                                    final_no_list.append(max_existing_no)
                                 else:
-                                    if not cur_val: row_dict[date_k] = ""
+                                    final_no_list.append(v)
 
-                            for test_k, date_k in INSPECT_2ND_PAIRS.items():
-                                cur_val = str(row_dict.get(test_k, '')).strip().upper()
-                                cur_date = clean_date_str(row_dict.get(date_k, ''))
-                                if cur_val in ['PASS', 'FAIL']:
-                                    if not cur_date: row_dict[date_k] = today_str
-                                else:
-                                    if not cur_val: row_dict[date_k] = ""
+                            processed_df['final_no'] = final_no_list
+                            processed_df['NO.'] = [str(x) for x in final_no_list]
+                            processed_df.sort_values(by='final_no', ascending=True, inplace=True)
+                            processed_df.drop(columns=['final_no'], inplace=True)
 
-                            valid_rows.append(row_dict)
+                            for col in DATE_FIELDS:
+                                if col in processed_df.columns:
+                                    processed_df[col] = processed_df[col].apply(clean_date_str)
 
-                    if not valid_rows:
-                        st.warning("저장할 유효 데이터가 없습니다.")
-                    else:
-                        processed_df = pd.DataFrame(valid_rows, columns=EXCEL_FIELDS)
+                            processed_df = calculate_reception_counts(processed_df)
+                            final_save_df = processed_df[EXCEL_FIELDS].fillna("").astype(str)
+                            final_save_df.to_sql("as_data", conn, if_exists="replace", index=False)
 
-                        int_nos = [safe_int_no(v) for v in processed_df['NO.']]
-                        valid_existing = [x for x in int_nos if x is not None]
-                        max_existing_no = max(valid_existing) if valid_existing else 0
+                            st.session_state["display_df"] = load_fresh_db_data(current_order)
+                            if '선택' not in st.session_state["display_df"].columns:
+                                st.session_state["display_df"].insert(0, '선택', False)
+                                
+                            st.toast("✅ 저장 완료! 데이터가 데이터베이스에 영구 저장되었습니다.", icon="💾")
+                            st.rerun()
 
-                        final_no_list = []
-                        for v in int_nos:
-                            if v is None:
-                                max_existing_no += 1
-                                final_no_list.append(max_existing_no)
-                            else:
-                                final_no_list.append(v)
-
-                        processed_df['final_no'] = final_no_list
-                        processed_df['NO.'] = [str(x) for x in final_no_list]
-                        processed_df.sort_values(by='final_no', ascending=True, inplace=True)
-                        processed_df.drop(columns=['final_no'], inplace=True)
-
-                        for col in DATE_FIELDS:
-                            if col in processed_df.columns:
-                                processed_df[col] = processed_df[col].apply(clean_date_str)
-
-                        processed_df = calculate_reception_counts(processed_df)
-                        final_save_df = processed_df[EXCEL_FIELDS].fillna("").astype(str)
-                        final_save_df.to_sql("as_data", conn, if_exists="replace", index=False)
-
-                        st.session_state["display_df"] = load_fresh_db_data(current_order)
-                        if '선택' not in st.session_state["display_df"].columns:
-                            st.session_state["display_df"].insert(0, '선택', False)
-                            
-                        st.toast("✅ 저장 완료! 데이터가 데이터베이스에 영구 저장되었습니다.", icon="💾")
-                        st.rerun()
-
-                except Exception as save_err:
-                    st.error(f"저장 중 오류 발생: {save_err}")
+                    except Exception as save_err:
+                        st.error(f"저장 중 오류 발생: {save_err}")
+            else:
+                st.caption("🔒 일반 사용자는 표 수정 및 DB 저장이 제한됩니다.")
 
         with b_col2:
-            if st.button("🗑️ 선택한 행 DB에서 완전 삭제"):
-                delete_targets = edited_df[edited_df['선택'] == True]
-                if delete_targets.empty:
-                    st.warning("삭제할 행을 앞쪽 [선택] 체크박스로 먼저 지정해 주세요.")
-                else:
-                    try:
-                        remaining_df = edited_df[edited_df['선택'] == False][EXCEL_FIELDS].copy()
-                        meaningful_cols = ['접수일', '프로젝트', '제품명', '제품 S/N', '접수내역', '확인내역']
-                        valid_remaining = []
-                        for _, row in remaining_df.iterrows():
-                            if any(str(row.get(c, '')).strip() not in ['', 'nan', 'None'] for c in meaningful_cols):
-                                valid_remaining.append(row)
+            if is_master:
+                if st.button("🗑️ 선택한 행 DB에서 완전 삭제"):
+                    delete_targets = edited_df[edited_df['선택'] == True]
+                    if delete_targets.empty:
+                        st.warning("삭제할 행을 앞쪽 [선택] 체크박스로 먼저 지정해 주세요.")
+                    else:
+                        try:
+                            remaining_df = edited_df[edited_df['선택'] == False][EXCEL_FIELDS].copy()
+                            meaningful_cols = ['접수일', '프로젝트', '제품명', '제품 S/N', '접수내역', '확인내역']
+                            valid_remaining = []
+                            for _, row in remaining_df.iterrows():
+                                if any(str(row.get(c, '')).strip() not in ['', 'nan', 'None'] for c in meaningful_cols):
+                                    valid_remaining.append(row)
 
-                        if valid_remaining:
-                            clean_rem_df = pd.DataFrame(valid_remaining, columns=EXCEL_FIELDS)
-                            final_db_df = clean_rem_df[EXCEL_FIELDS].fillna("").astype(str)
-                        else:
-                            final_db_df = pd.DataFrame(columns=EXCEL_FIELDS)
+                            if valid_remaining:
+                                clean_rem_df = pd.DataFrame(valid_remaining, columns=EXCEL_FIELDS)
+                                final_db_df = clean_rem_df[EXCEL_FIELDS].fillna("").astype(str)
+                            else:
+                                final_db_df = pd.DataFrame(columns=EXCEL_FIELDS)
 
-                        final_db_df.to_sql("as_data", conn, if_exists="replace", index=False)
-                        
-                        st.session_state["display_df"] = load_fresh_db_data(current_order)
-                        if '선택' not in st.session_state["display_df"].columns:
-                            st.session_state["display_df"].insert(0, '선택', False)
+                            final_db_df.to_sql("as_data", conn, if_exists="replace", index=False)
                             
-                        st.toast(f"🗑️ {len(delete_targets)}건 삭제 완료", icon="✅")
-                        st.rerun()
-                    except Exception as del_err:
-                        st.error(f"삭제 처리 중 오류 발생: {del_err}")
+                            st.session_state["display_df"] = load_fresh_db_data(current_order)
+                            if '선택' not in st.session_state["display_df"].columns:
+                                st.session_state["display_df"].insert(0, '선택', False)
+                                
+                            st.toast(f"🗑️ {len(delete_targets)}건 삭제 완료", icon="✅")
+                            st.rerun()
+                        except Exception as del_err:
+                            st.error(f"삭제 처리 중 오류 발생: {del_err}")
+            else:
+                st.caption("🔒 일반 사용자는 행 삭제가 제한됩니다.")
 
         with b_col3:
             fresh_ledger = load_fresh_db_data(current_order)[EXCEL_FIELDS]
             ledger_excel_bytes = make_excel_bytes_with_merge(fresh_ledger)
             st.download_button(
-                label="📥 AS관리대장 엑셀 다운로드 (재검사 노란색 음영 & 셀 병합 반영)",
+                label="📥 AS관리대장 엑셀 다운로드",
                 data=ledger_excel_bytes,
                 file_name=f"AS관리대장_{datetime.now().strftime('%y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
