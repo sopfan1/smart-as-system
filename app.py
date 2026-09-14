@@ -28,6 +28,22 @@ if not os.path.exists(TEMPLATE_FILE):
 
 conn = sqlite3.connect("smart_as.db", check_same_thread=False)
 
+INSPECT_1ST_PAIRS = {
+    '1차_육안': '1차_육안_일자',
+    '1차_특성': '1차_특성_일자',
+    '1차_조합': '1차_조합_일자',
+    '1차_AGING': '1차_AGING_일자',
+    '1차_FULL부하': '1차_FULL부하_일자'
+}
+
+INSPECT_2ND_PAIRS = {
+    '재검_육안': '재검_육안_일자',
+    '재검_특성': '재검_특성_일자',
+    '재검_조합': '재검_조합_일자',
+    '재검_AGING': '재검_AGING_일자',
+    '재검_FULL부하': '재검_FULL부하_일자'
+}
+
 EXCEL_FIELDS = [
     'NO.', '접수일', '발생일', '제조처', '접수처', '프로젝트', '제품명', '제품 S/N', '위치', '접수횟수', 
     '유/무상', '접수내역', '확인내역', 
