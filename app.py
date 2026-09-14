@@ -719,24 +719,31 @@ try:
             hide_index=True,
             height=750,
             num_rows="dynamic" if is_master else "fixed",
-            key="main_editor_v14"
+            key="main_editor_v15"
         )
 
-        # ✅ 개선⑰: 편집 내용 동기화는 '실제 변경이 있을 때만' 수행.
-        #   매 실행마다 무조건 대입하면 data_editor가 재계산되며 스크롤이 위로 튕기고,
-        #   리포트/다운로드 버튼 클릭 시 NO.가 엉뚱하게 이동하는 현상이 생김.
-        edited_aligned = edited_df.copy()
-        edited_aligned.index = v_df.index[:len(edited_df)]
+        # ✅ 개선⑰(수정): 편집 내용 동기화를 '행 수 안전'하게 처리.
+        #   num_rows="dynamic"에서 행을 추가/삭제하면 edited_df와 v_df의 행 수가
+        #   달라져 인덱스 정렬 대입이 Length mismatch로 터짐. 그래서:
+        #   - 행 수가 같으면: 원본 인덱스에 정렬해 변경분만 동기화(스크롤 튕김 방지)
+        #   - 행 수가 다르면: 정렬 대신 편집본 전체를 세션에 따로 보관(저장 시 사용)
         cols_to_sync = ['선택'] + EXCEL_FIELDS
-        try:
-            current_block = st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync]
-            if not current_block.reset_index(drop=True).equals(
-                    edited_aligned[cols_to_sync].reset_index(drop=True)):
-                st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync] = \
-                    edited_aligned[cols_to_sync]
-        except Exception:
-            st.session_state["display_df"].loc[edited_aligned.index, cols_to_sync] = \
-                edited_aligned[cols_to_sync]
+        st.session_state["_edited_rowcount_changed"] = (len(edited_df) != len(v_df))
+
+        if len(edited_df) == len(v_df):
+            try:
+                edited_aligned = edited_df.copy()
+                edited_aligned.index = v_df.index
+                current_block = st.session_state["display_df"].loc[v_df.index, cols_to_sync]
+                if not current_block.reset_index(drop=True).equals(
+                        edited_aligned[cols_to_sync].reset_index(drop=True)):
+                    st.session_state["display_df"].loc[v_df.index, cols_to_sync] = \
+                        edited_aligned[cols_to_sync]
+            except Exception:
+                pass  # 동기화 실패해도 앱이 죽지 않도록
+        else:
+            # 행이 추가/삭제된 상태: 편집본 스냅샷을 보관(저장 버튼에서 반영)
+            st.session_state["_edited_snapshot"] = edited_df[cols_to_sync].copy()
 
         b1, b2, b3 = st.columns([3, 3, 4])
 
@@ -748,7 +755,21 @@ try:
             )
             if save_btn and is_master:
                 try:
-                    raw_df = st.session_state["display_df"][EXCEL_FIELDS].copy()
+                    # 행이 추가/삭제된 편집 상태면, 화면 편집본(스냅샷)을 display_df에 먼저 반영
+                    if st.session_state.get("_edited_rowcount_changed") and \
+                            "_edited_snapshot" in st.session_state:
+                        snap = st.session_state["_edited_snapshot"]
+                        # 스냅샷에는 '선택'열이 포함 → EXCEL_FIELDS만 추출
+                        snap_fields = [c for c in EXCEL_FIELDS if c in snap.columns]
+                        new_display = snap[snap_fields].copy()
+                        for c in EXCEL_FIELDS:
+                            if c not in new_display.columns:
+                                new_display[c] = ""
+                        new_display = new_display[EXCEL_FIELDS]
+                        raw_df = new_display.copy()
+                    else:
+                        raw_df = st.session_state["display_df"][EXCEL_FIELDS].copy()
+
                     if current_order.startswith("최신순"):
                         raw_df = raw_df.iloc[::-1].reset_index(drop=True)
 
@@ -774,6 +795,8 @@ try:
                         clear_data_cache()
                         st.session_state["display_df"] = load_db_data(current_order)
                         ensure_select_col()
+                        st.session_state.pop("_edited_snapshot", None)
+                        st.session_state["_edited_rowcount_changed"] = False
                         st.toast("✅ DB 영구 저장 완료", icon="💾")
                         st.rerun()
                 except Exception as e:
@@ -788,12 +811,17 @@ try:
             if del_btn and is_master:
                 targets = edited_df[edited_df['선택'] == True]
                 if not targets.empty:
-                    target_orig_indices = v_df.index[:len(edited_df)][edited_df['선택'].values == True]
-                    rem_df = st.session_state["display_df"].drop(index=target_orig_indices)[EXCEL_FIELDS]
+                    # ✅ 인덱스 슬라이싱 대신 선택된 행의 NO.로 매칭 삭제(행수 불일치 안전)
+                    target_nos = set(str(x).strip() for x in targets['NO.'].tolist())
+                    disp = st.session_state["display_df"]
+                    keep_mask = ~disp['NO.'].astype(str).str.strip().isin(target_nos)
+                    rem_df = disp[keep_mask][EXCEL_FIELDS]
                     rem_df.fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
                     clear_data_cache()
                     st.session_state["display_df"] = load_db_data(current_order)
                     ensure_select_col()
+                    st.session_state.pop("_edited_snapshot", None)
+                    st.session_state["_edited_rowcount_changed"] = False
                     st.toast("🗑️ 삭제 완료", icon="✅")
                     st.rerun()
 
@@ -828,7 +856,8 @@ try:
                         snapshot = sel_rows.to_dict(orient="records")
                         r_tuple = tuple(tuple(sorted(r.items())) for r in snapshot)
                         st.session_state["_report_bytes"] = generate_repair_report(r_tuple, TEMPLATE_FILE)
-                        st.session_state["_report_nos"] = "_".join(sel_nos)[:40]
+                        safe_nos = [n.replace('/', '_').replace('\\', '_') for n in sel_nos]
+                        st.session_state["_report_nos"] = "_".join(safe_nos)[:40]
                         st.toast(f"✅ REPORT 생성 완료 (NO. {', '.join(sel_nos)})", icon="📑")
                     except Exception as e:
                         st.error(f"REPORT 생성 오류: {e}")
