@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 관리대장 & 검색/필터")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 초고속 최적화 버전")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -71,7 +71,7 @@ DATE_FIELDS = [
 ]
 
 # -------------------------------------------------------------
-# [2. 데이터베이스 자동 초기화 함수]
+# [2. 데이터베이스 초기화 및 경량 로드 함수]
 # -------------------------------------------------------------
 def init_db():
     cursor = conn.cursor()
@@ -85,8 +85,37 @@ def init_db():
 
 init_db()
 
+def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
+    try:
+        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
+    except:
+        init_db()
+        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
+        
+    for col in EXCEL_FIELDS:
+        if col not in df.columns: df[col] = ""
+    ed_df = df[['rowid_val'] + EXCEL_FIELDS].copy()
+    
+    for col in DATE_FIELDS:
+        if col in ed_df.columns:
+            ed_df[col] = ed_df[col].astype(str).str.strip().replace(['nan', 'None', 'NAT', 'NaT'], '')
+    
+    for col in list(INSPECT_1ST_PAIRS.keys()) + list(INSPECT_2ND_PAIRS.keys()):
+        ed_df[col] = ed_df[col].fillna("").astype(str).str.strip().str.upper()
+        ed_df[col] = ed_df[col].apply(lambda x: x if x in ['PASS', 'FAIL'] else "")
+        
+    ed_df['temp_no_sort'] = ed_df['NO.'].apply(lambda x: safe_int_no(x) if safe_int_no(x) is not None else 999999)
+    ed_df.sort_values(by='temp_no_sort', ascending=True, inplace=True)
+    ed_df.drop(columns=['temp_no_sort'], inplace=True)
+
+    if order_mode.startswith("최신순"):
+        ed_df = ed_df.iloc[::-1].reset_index(drop=True)
+    else:
+        ed_df = ed_df.reset_index(drop=True)
+    return ed_df
+
 # -------------------------------------------------------------
-# [3. 보조 함수]
+# [3. 보조 유틸 함수]
 # -------------------------------------------------------------
 def clean_date_str(val):
     if pd.isna(val): return ""
@@ -145,35 +174,6 @@ def calculate_reception_counts(df_to_calc):
                 
     df_to_calc['접수횟수'] = counts
     return df_to_calc
-
-def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
-    try:
-        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
-    except:
-        init_db()
-        df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
-        
-    for col in EXCEL_FIELDS:
-        if col not in df.columns: df[col] = ""
-    ed_df = df[['rowid_val'] + EXCEL_FIELDS].copy()
-    
-    for col in DATE_FIELDS:
-        if col in ed_df.columns:
-            ed_df[col] = ed_df[col].apply(clean_date_str)
-    
-    for col in list(INSPECT_1ST_PAIRS.keys()) + list(INSPECT_2ND_PAIRS.keys()):
-        ed_df[col] = ed_df[col].fillna("").astype(str).str.strip().str.upper()
-        ed_df[col] = ed_df[col].apply(lambda x: x if x in ['PASS', 'FAIL'] else "")
-        
-    ed_df['temp_no_sort'] = ed_df['NO.'].apply(lambda x: safe_int_no(x) if safe_int_no(x) is not None else 999999)
-    ed_df.sort_values(by='temp_no_sort', ascending=True, inplace=True)
-    ed_df.drop(columns=['temp_no_sort'], inplace=True)
-
-    if order_mode.startswith("최신순"):
-        ed_df = ed_df.iloc[::-1].reset_index(drop=True)
-    else:
-        ed_df = ed_df.reset_index(drop=True)
-    return ed_df
 
 def make_excel_bytes_with_merge(dataframe):
     wb = openpyxl.Workbook()
@@ -524,7 +524,7 @@ def generate_multi_repair_excel(selected_rows_data, template_filename=TEMPLATE_F
     return out_buf.getvalue()
 
 # -------------------------------------------------------------
-# [4. 사이드바 로그인 및 권한 관리 시스템 (jwko / qcteam12!)]
+# [4. 사이드바 로그인 및 권한 관리 시스템]
 # -------------------------------------------------------------
 st.sidebar.title("🔐 사용자 인증 및 권한")
 auth_mode = st.sidebar.radio("접속 모드 선택", ["일반 사용자 (조회/REPORT 출력)", "마스터 관리자 (등록/수정 권한)"])
@@ -736,12 +736,12 @@ try:
             st.info("ℹ️ 현재 **일반 사용자 모드**입니다. 신규 등록 및 데이터 수정은 사이드바에서 마스터 계정(`jwko`)으로 로그인 후 가능합니다.")
 
         # -------------------------------------------------------------
-        # [엑셀 스타일 검색 및 필터 바 추가]
+        # [엑셀 스타일 검색 및 필터 바]
         # -------------------------------------------------------------
         st.markdown("#### 🔎 AS관리대장 검색 및 필터 바")
         s_c1, s_c2, s_c3, s_c4 = st.columns(4)
         with s_c1:
-            search_query = st.text_input("🔍 통합 검색 (제품명, S/N, 내용 등)", value="", key="ledger_search_box")
+            search_query = st.text_input("🔍 통합 검색 (제품명, S/N 등)", value="", key="ledger_search_box")
         with s_c2:
             all_projs = sorted([str(p).strip() for p in st.session_state["display_df"]['프로젝트'].unique() if str(p).strip()])
             sel_proj_filter = st.selectbox("🏗️ 프로젝트 필터", ["전체 프로젝트"] + all_projs, key="ledger_proj_filter")
@@ -751,7 +751,6 @@ try:
             all_res = sorted([str(r).strip() for r in st.session_state["display_df"]['처리결과'].unique() if str(r).strip()])
             sel_res_filter = st.selectbox("📌 처리결과 필터", ["전체"] + all_res, key="ledger_res_filter")
 
-        # 필터링 적용
         view_df = st.session_state["display_df"].copy()
         if search_query.strip():
             q = search_query.strip().lower()
@@ -813,10 +812,9 @@ try:
             hide_index=True,
             height=850,
             num_rows="dynamic" if is_master else "fixed",
-            key="stable_as_table_editor_v5"
+            key="stable_as_table_editor_v6"
         )
 
-        # 수정된 내용을 전체 session_state["display_df"]에 반영 (인덱스 기준 매칭)
         for idx in edited_df.index:
             st.session_state["display_df"].loc[idx, ['선택'] + EXCEL_FIELDS] = edited_df.loc[idx, ['선택'] + EXCEL_FIELDS].values
 
@@ -924,7 +922,6 @@ try:
                         st.warning("삭제할 행을 앞쪽 [선택] 체크박스로 먼저 지정해 주세요.")
                     else:
                         try:
-                            # 전체 데이터에서 선택된 행들을 제외
                             sel_indices = delete_targets.index.tolist()
                             remaining_df = st.session_state["display_df"].drop(index=sel_indices).copy()
                             clean_rem_df = remaining_df[EXCEL_FIELDS].copy()
