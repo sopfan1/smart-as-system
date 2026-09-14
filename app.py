@@ -465,8 +465,10 @@ def _highlight_row_cells(ws, row, cols):
         ws.cell(row=anchor_r, column=anchor_c).fill = YELLOW_FILL
 
 
-@st.cache_data(show_spinner=False)
 def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE):
+    # ⚠ 캐시 미사용: 리포트는 버튼 클릭 시에만 생성되므로 캐시가 불필요하고,
+    #   캐시가 있으면 로직을 수정해도 같은 입력에 대해 옛 결과가 재사용되어
+    #   '코드를 고쳐도 리포트가 안 바뀌는' 문제가 생김.
     selected_rows_data = [dict(r) for r in selected_rows_tuple]
     if not os.path.exists(template_filename):
         wb = openpyxl.Workbook()
