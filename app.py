@@ -6,6 +6,7 @@ import os
 import math
 from datetime import datetime, timedelta
 import openpyxl
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill, Alignment, Border, Side, Font
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.drawing.spreadsheet_drawing import OneCellAnchor, AnchorMarker
@@ -360,6 +361,19 @@ def add_image_with_nudge(ws, xl_img, col, row, nx, ny):
     ws.add_image(xl_img)
 
 
+# ✅ 개선⑭: 병합 셀 안전 쓰기 (MergedCell read-only 오류 방지)
+def _safe_set(ws, row, col, value):
+    """(row, col)이 병합 셀의 비앵커 위치면 병합범위 좌상단 앵커에 대신 쓴다."""
+    cell = ws.cell(row=row, column=col)
+    if isinstance(cell, MergedCell):
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                ws.cell(row=rng.min_row, column=rng.min_col).value = value
+                return
+        return  # 병합 정보를 못 찾으면 조용히 스킵
+    cell.value = value
+
+
 @st.cache_data(show_spinner=False)
 def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE):
     selected_rows_data = [dict(r) for r in selected_rows_tuple]
@@ -392,41 +406,44 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
         # ✅ 개선⑧: 셀 순회를 iter_rows로, max 범위를 한 번만 계산
         max_r = min(ws.max_row, 50)
         max_c = min(ws.max_column, 15)
+        # 순회 중 셀을 수정하므로, 매칭 위치를 먼저 수집한 뒤 일괄 처리
+        matches = []
         for row_cells in ws.iter_rows(min_row=1, max_row=max_r, min_col=1, max_col=max_c):
             for cell in row_cells:
                 val = cell.value
                 if not val:
                     continue
-                v_str = str(val).strip()
-                v_nospace = v_str.replace(" ", "")
-                r, c = cell.row, cell.column
+                matches.append((cell.row, cell.column, str(val).strip()))
 
-                if v_str == "접수일":
-                    ws.cell(row=r, column=c + 1).value = clean_date_str(row_data.get('접수일', ''))
-                elif v_str == "프로젝트":
-                    ws.cell(row=r, column=c + 1).value = row_data.get('프로젝트', '')
-                elif v_str == "제품명":
-                    ws.cell(row=r, column=c + 1).value = row_data.get('제품명', '')
-                elif "S/N" in v_str.upper():
-                    ws.cell(row=r, column=c + 1).value = row_data.get('제품 S/N', '')
-                elif v_str == "접수내역":
-                    ws.cell(row=r, column=c + 1).value = row_data.get('접수내역', '')
-                elif "불량증상" in v_nospace:
-                    ws.cell(row=r, column=10).value = row_data.get('확인내역', '')
-                elif "수리내역" in v_nospace:
-                    ws.cell(row=r, column=10).value = repair_desc
-                elif v_str == "비고":
-                    ws.cell(row=r, column=c + 1).value = row_data.get('비고', '')
-                elif "확인내역_사진" in v_nospace:
-                    cell.value = ""
-                    img1 = prepare_excel_image(row_data.get('확인내역_사진'))
-                    if img1:
-                        add_image_with_nudge(ws, img1, c, r, 4, 4)
-                elif "수리내역_사진" in v_nospace:
-                    cell.value = ""
-                    img2 = prepare_excel_image(row_data.get('수리내역_사진'))
-                    if img2:
-                        add_image_with_nudge(ws, img2, c, r, 4, 4)
+        for r, c, v_str in matches:
+            v_nospace = v_str.replace(" ", "")
+
+            if v_str == "접수일":
+                _safe_set(ws, r, c + 1, clean_date_str(row_data.get('접수일', '')))
+            elif v_str == "프로젝트":
+                _safe_set(ws, r, c + 1, row_data.get('프로젝트', ''))
+            elif v_str == "제품명":
+                _safe_set(ws, r, c + 1, row_data.get('제품명', ''))
+            elif "S/N" in v_str.upper():
+                _safe_set(ws, r, c + 1, row_data.get('제품 S/N', ''))
+            elif v_str == "접수내역":
+                _safe_set(ws, r, c + 1, row_data.get('접수내역', ''))
+            elif "불량증상" in v_nospace:
+                _safe_set(ws, r, 10, row_data.get('확인내역', ''))
+            elif "수리내역" in v_nospace:
+                _safe_set(ws, r, 10, repair_desc)
+            elif v_str == "비고":
+                _safe_set(ws, r, c + 1, row_data.get('비고', ''))
+            elif "확인내역_사진" in v_nospace:
+                _safe_set(ws, r, c, "")
+                img1 = prepare_excel_image(row_data.get('확인내역_사진'))
+                if img1:
+                    add_image_with_nudge(ws, img1, c, r, 4, 4)
+            elif "수리내역_사진" in v_nospace:
+                _safe_set(ws, r, c, "")
+                img2 = prepare_excel_image(row_data.get('수리내역_사진'))
+                if img2:
+                    add_image_with_nudge(ws, img2, c, r, 4, 4)
 
     buf = io.BytesIO()
     wb.save(buf)
