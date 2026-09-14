@@ -71,6 +71,16 @@ EXCEL_FIELDS = [
     '확인내역_사진', '수리내역_사진'
 ]
 
+# 검사 항목 라벨(D열) → DB 필드 매핑
+# (라벨 매칭키, 1차_결과, 1차_일자, 재검_결과, 재검_일자, AGING여부)
+INSPECT_ROW_MAP = [
+    ('육안검사', '1차_육안', '1차_육안_일자', '재검_육안', '재검_육안_일자', False),
+    ('전자소자', '1차_특성', '1차_특성_일자', '재검_특성', '재검_특성_일자', False),
+    ('기능', '1차_조합', '1차_조합_일자', '재검_조합', '재검_조합_일자', False),
+    ('AGING', '1차_AGING', '1차_AGING_일자', '재검_AGING', '재검_AGING_일자', True),
+    ('FULL부하', '1차_FULL부하', '1차_FULL부하_일자', '재검_FULL부하', '재검_FULL부하_일자', False),
+]
+
 DATE_FIELDS = [
     '접수일', '발생일', '완료일자', '인계일자',
     '1차_육안_일자', '1차_특성_일자', '1차_조합_일자', '1차_AGING_일자', '1차_FULL부하_일자',
@@ -374,6 +384,79 @@ def _safe_set(ws, row, col, value):
     cell.value = value
 
 
+# ✅ 개선⑮: 라벨이 병합 셀이면 그 병합범위가 끝나는 '다음 열'을 값 칸으로 계산.
+#           (라벨 바로 오른쪽 c+1은 병합 내부라, 값이 라벨을 덮어쓰던 버그를 해결)
+def _value_col_after_label(ws, row, col):
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+            return rng.max_col + 1
+    return col + 1
+
+
+def _merge_lines(v1, v2):
+    s1, s2 = str(v1).strip(), str(v2).strip()
+    if s1 and s2:
+        return f"{s1}\n{s2}"
+    return s1 or s2 or ""
+
+
+# ✅ 개선⑯: 출하검사 표의 한 행(항목)을 채운다.
+#   - 검사일자(M열 계열)와 판정(P열 계열)을 DB에서 가져와 기록
+#   - 재검(2차) 값이 있으면 1차값과 줄바꿈으로 함께 표시 + 노란색 강조
+#   - AGING 항목은 시작일 +2일 범위로 표시
+def _fill_inspect_row(ws, row, col, v_nospace, row_data):
+    for key, r1k, d1k, r2k, d2k, is_aging in INSPECT_ROW_MAP:
+        if key not in v_nospace:
+            continue
+
+        r1 = str(row_data.get(r1k, '')).strip()
+        r2 = str(row_data.get(r2k, '')).strip()
+        has_retest = bool(r2)
+
+        if is_aging:
+            d1 = calc_aging_48h(row_data.get(d1k, ''), multiline=True) if r1 else ""
+            d2 = calc_aging_48h(row_data.get(d2k, ''), multiline=True) if r2 else ""
+        else:
+            d1 = str(row_data.get(d1k, '')).strip()
+            d2 = str(row_data.get(d2k, '')).strip()
+
+        verdict = _merge_lines(r1, r2)
+        datestr = _merge_lines(d1, d2)
+
+        # 항목 라벨(col) 기준으로 검사일자 열과 판정 열을 병합구조에서 계산
+        # 라벨 병합 끝 다음 = 규격열 시작 → 규격 병합 끝 다음 = 검사일자 → 그 다음 = 판정
+        spec_col = _value_col_after_label(ws, row, col)          # 규격(기준) 열
+        date_col = _col_after_merge(ws, row, spec_col)           # 검사일자 열
+        judge_col = _col_after_merge(ws, row, date_col)          # 판정 열
+
+        _safe_set(ws, row, date_col, datestr if datestr else "-")
+        _safe_set(ws, row, judge_col, verdict if verdict else "-")
+
+        # 재검이 있으면 해당 항목행 전체(검사일자·판정 병합영역)를 노란색으로
+        if has_retest:
+            _highlight_row_cells(ws, row, [date_col, judge_col])
+        return
+
+
+def _col_after_merge(ws, row, col):
+    """(row,col)이 병합이면 병합 끝+1, 아니면 col+1"""
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+            return rng.max_col + 1
+    return col + 1
+
+
+def _highlight_row_cells(ws, row, cols):
+    """지정 열들이 속한 병합영역의 앵커 셀을 노란색으로 칠한다."""
+    for col in cols:
+        anchor_r, anchor_c = row, col
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                anchor_r, anchor_c = rng.min_row, rng.min_col
+                break
+        ws.cell(row=anchor_r, column=anchor_c).fill = YELLOW_FILL
+
+
 @st.cache_data(show_spinner=False)
 def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE):
     selected_rows_data = [dict(r) for r in selected_rows_tuple]
@@ -417,23 +500,26 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
 
         for r, c, v_str in matches:
             v_nospace = v_str.replace(" ", "")
+            # 라벨이 병합 셀이면 병합 끝 다음 열이 값 칸
+            vc = _value_col_after_label(ws, r, c)
 
             if v_str == "접수일":
-                _safe_set(ws, r, c + 1, clean_date_str(row_data.get('접수일', '')))
+                _safe_set(ws, r, vc, clean_date_str(row_data.get('접수일', '')))
             elif v_str == "프로젝트":
-                _safe_set(ws, r, c + 1, row_data.get('프로젝트', ''))
+                _safe_set(ws, r, vc, row_data.get('프로젝트', ''))
             elif v_str == "제품명":
-                _safe_set(ws, r, c + 1, row_data.get('제품명', ''))
+                _safe_set(ws, r, vc, row_data.get('제품명', ''))
             elif "S/N" in v_str.upper():
-                _safe_set(ws, r, c + 1, row_data.get('제품 S/N', ''))
+                _safe_set(ws, r, vc, row_data.get('제품 S/N', ''))
             elif v_str == "접수내역":
-                _safe_set(ws, r, c + 1, row_data.get('접수내역', ''))
+                _safe_set(ws, r, vc, row_data.get('접수내역', ''))
             elif "불량증상" in v_nospace:
+                # 불량증상/수리내역 값은 10번 열(J)에 기록
                 _safe_set(ws, r, 10, row_data.get('확인내역', ''))
-            elif "수리내역" in v_nospace:
+            elif "수리내역" in v_nospace and "사진" not in v_nospace:
                 _safe_set(ws, r, 10, repair_desc)
             elif v_str == "비고":
-                _safe_set(ws, r, c + 1, row_data.get('비고', ''))
+                _safe_set(ws, r, vc, row_data.get('비고', ''))
             elif "확인내역_사진" in v_nospace:
                 _safe_set(ws, r, c, "")
                 img1 = prepare_excel_image(row_data.get('확인내역_사진'))
@@ -444,6 +530,9 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
                 img2 = prepare_excel_image(row_data.get('수리내역_사진'))
                 if img2:
                     add_image_with_nudge(ws, img2, c, r, 4, 4)
+            else:
+                # ✅ 개선⑯: 출하검사 표 채우기 (검사일자·판정, 재검 병합, AGING +2일)
+                _fill_inspect_row(ws, r, c, v_nospace, row_data)
 
     buf = io.BytesIO()
     wb.save(buf)
