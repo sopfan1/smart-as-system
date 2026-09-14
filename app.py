@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 현업 고정 최적화 버전")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 연도별 초고속 최적화 버전")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -85,6 +85,7 @@ def init_db():
 
 init_db()
 
+@st.cache_data(show_spinner=False)
 def load_db_data(order_mode="최신순 (마지막 NO.부터)"):
     try:
         df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
@@ -109,6 +110,9 @@ def load_db_data(order_mode="최신순 (마지막 NO.부터)"):
     else:
         ed_df = ed_df.reset_index(drop=True)
     return ed_df
+
+def clear_data_cache():
+    st.cache_data.clear()
 
 # -------------------------------------------------------------
 # [3. 보조 유틸 함수]
@@ -359,7 +363,7 @@ def add_image_with_nudge(ws, xl_img, col, row, nx, ny):
     ws.add_image(xl_img)
 
 # -------------------------------------------------------------
-# [4. 세션 기반 인증 및 UI 실행부]
+# [4. 세션 기반 인증 및 연도별 조회 UI 실행부]
 # -------------------------------------------------------------
 st.sidebar.title("🔐 사용자 인증 및 권한")
 
@@ -391,6 +395,7 @@ current_order = st.radio("대장 표시 순서", ["최신순 (마지막 NO.부�
 
 if current_order != st.session_state["last_order"]:
     st.session_state["last_order"] = current_order
+    clear_data_cache()
     st.session_state["display_df"] = load_db_data(current_order)
     if '선택' not in st.session_state["display_df"].columns: st.session_state["display_df"].insert(0, '선택', False)
 
@@ -410,6 +415,7 @@ if is_master:
                 ex_df['NO.'] = [str(safe_int_no(v)) if safe_int_no(v) is not None else str(i+1) for i, v in enumerate(ex_df['NO.'])]
                 ex_df = calculate_reception_counts(ex_df)
                 ex_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
+                clear_data_cache()
                 st.session_state["display_df"] = load_db_data(current_order)
                 if '선택' not in st.session_state["display_df"].columns: st.session_state["display_df"].insert(0, '선택', False)
                 st.success("반영 완료")
@@ -420,20 +426,34 @@ try:
     tab1, tab2 = st.tabs(["📝 AS 관리대장 & 수리 REPORT", "📊 KPI 분석"])
 
     with tab1:
-        st.markdown("#### 🔎 통합 검색 및 필터")
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        with sc1: search_query = st.text_input("통합 검색", value="")
-        with sc2: sel_proj = st.selectbox("프로젝트", ["전체 프로젝트"] + sorted([str(p).strip() for p in st.session_state["display_df"]['프로젝트'].unique() if str(p).strip()]))
-        with sc3: sel_cost = st.selectbox("유/무상", ["전체", "무상", "유상"])
-        with sc4: sel_res = st.selectbox("처리결과", ["전체"] + sorted([str(r).strip() for r in st.session_state["display_df"]['처리결과'].unique() if str(r).strip()]))
+        # [연도별 필터 최적화] 데이터 로딩 부하를 줄이기 위해 연도 선택 바 배치
+        full_df = st.session_state["display_df"].copy()
+        full_df['접수년도'] = full_df['접수일'].astype(str).str[:4]
+        available_years = sorted([y for y in full_df['접수년도'].unique() if y.isdigit() and len(y) == 4], reverse=True)
+        if not available_years: available_years = [str(datetime.now().year)]
 
-        v_df = st.session_state["display_df"].copy()
+        st.markdown("#### 📅 조회 연도 선택 및 필터")
+        y_col1, sc1, sc2, sc3, sc4 = st.columns([1.5, 2.2, 2.2, 2.2, 2.2])
+        with y_col1:
+            sel_year = st.selectbox("조회 연도", available_years, index=0)
+        
+        # 선택된 연도의 데이터만 필터링하여 렌더링 부하 원천 차단
+        year_filtered_df = full_df[full_df['접수년도'] == sel_year].copy()
+
+        with sc1: search_query = st.text_input("통합 검색", value="")
+        with sc2: sel_proj = st.selectbox("프로젝트", ["전체 프로젝트"] + sorted([str(p).strip() for p in year_filtered_df['프로젝트'].unique() if str(p).strip()]))
+        with sc3: sel_cost = st.selectbox("유/무상", ["전체", "무상", "유상"])
+        with sc4: sel_res = st.selectbox("처리결과", ["전체"] + sorted([str(r).strip() for r in year_filtered_df['처리결과'].unique() if str(r).strip()]))
+
+        v_df = year_filtered_df.copy()
         if search_query.strip():
             q = search_query.strip().lower()
             v_df = v_df[v_df.astype(str).apply(lambda row: row.str.lower().str.contains(q).any(), axis=1)]
         if sel_proj != "전체 프로젝트": v_df = v_df[v_df['프로젝트'].astype(str).str.strip() == sel_proj]
         if sel_cost != "전체": v_df = v_df[v_df['유/무상'].astype(str).str.strip().str.contains(sel_cost)]
         if sel_res != "전체": v_df = v_df[v_df['처리결과'].astype(str).str.strip() == sel_res]
+
+        st.caption(f"📌 **{sel_year}년** 데이터 총 {len(year_filtered_df):,}건 중 **검색/필터된 항목: {len(v_df):,}건** 표시 중")
 
         pass_fail_options = ["", "PASS", "FAIL"]
         column_config = {
@@ -452,10 +472,12 @@ try:
             "재검_FULL부하": st.column_config.SelectboxColumn("재검_FULL부하", options=pass_fail_options, disabled=not is_master),
         }
 
-        edited_df = st.data_editor(v_df[['선택'] + EXCEL_FIELDS], column_config=column_config, hide_index=True, height=750, num_rows="dynamic" if is_master else "fixed", key="main_editor_v10")
+        edited_df = st.data_editor(v_df[['선택'] + EXCEL_FIELDS], column_config=column_config, hide_index=True, height=750, num_rows="dynamic" if is_master else "fixed", key="main_editor_v11")
 
+        # 수정된 내용을 전체 세션 데이터프레임에 실시간 반영
         for idx in edited_df.index:
-            st.session_state["display_df"].loc[idx, ['선택'] + EXCEL_FIELDS] = edited_df.loc[idx, ['선택'] + EXCEL_FIELDS].values
+            orig_idx = v_df.index[edited_df.index.get_loc(idx)]
+            st.session_state["display_df"].loc[orig_idx, ['선택'] + EXCEL_FIELDS] = edited_df.loc[idx, ['선택'] + EXCEL_FIELDS].values
 
         b1, b2, b3 = st.columns([3, 3, 4])
         
@@ -480,6 +502,7 @@ try:
                         p_df = pd.DataFrame(valid_rows, columns=EXCEL_FIELDS)
                         p_df = calculate_reception_counts(p_df)
                         p_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
+                        clear_data_cache()
                         st.session_state["display_df"] = load_db_data(current_order)
                         if '선택' not in st.session_state["display_df"].columns: st.session_state["display_df"].insert(0, '선택', False)
                         st.toast("✅ DB 영구 저장 완료", icon="💾")
@@ -491,8 +514,10 @@ try:
             if del_btn and is_master:
                 targets = edited_df[edited_df['선택'] == True]
                 if not targets.empty:
-                    rem_df = st.session_state["display_df"].drop(index=targets.index.tolist())[EXCEL_FIELDS]
+                    target_orig_indices = [v_df.index[edited_df.index.get_loc(i)] for i in targets.index]
+                    rem_df = st.session_state["display_df"].drop(index=target_orig_indices)[EXCEL_FIELDS]
                     rem_df.fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
+                    clear_data_cache()
                     st.session_state["display_df"] = load_db_data(current_order)
                     if '선택' not in st.session_state["display_df"].columns: st.session_state["display_df"].insert(0, '선택', False)
                     st.toast("🗑️ 삭제 완료", icon="✅")
