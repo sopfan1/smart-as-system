@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 초고속 최적화 버전")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 초고속 입력 최적화 버전")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -71,7 +71,7 @@ DATE_FIELDS = [
 ]
 
 # -------------------------------------------------------------
-# [2. 데이터베이스 초기화 및 경량 로드 함수]
+# [2. 데이터베이스 초기화 및 로드 함수]
 # -------------------------------------------------------------
 def init_db():
     cursor = conn.cursor()
@@ -115,7 +115,7 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
     return ed_df
 
 # -------------------------------------------------------------
-# [3. 보조 유틸 함수 및 캐시 적용 엑셀 생성]
+# [3. 보조 유틸 함수]
 # -------------------------------------------------------------
 def clean_date_str(val):
     if pd.isna(val): return ""
@@ -768,7 +768,7 @@ try:
         st.caption(f"총 데이터: {len(st.session_state['display_df']):,}건 중 **검색/필터된 항목: {len(view_df):,}건** 표시 중")
 
         if is_master:
-            st.markdown("#### 📋 AS관리대장 (관리자 편집 모드)")
+            st.markdown("#### 📋 AS관리대장 (관리자 편집 모드 - 입력 지연 제거됨)")
         else:
             st.markdown("#### 📋 AS관리대장 (조회 전용 모드)")
 
@@ -814,7 +814,7 @@ try:
             hide_index=True,
             height=850,
             num_rows="dynamic" if is_master else "fixed",
-            key="stable_as_table_editor_v6"
+            key="stable_as_table_editor_v7"
         )
 
         for idx in edited_df.index:
@@ -822,9 +822,12 @@ try:
 
         b_col1, b_col2, b_col3 = st.columns([3, 3, 4])
         
+        # =============================================================
+        # [최적화 핵심] 입력 중에는 연산을 안 하다가, [DB 영구 저장] 버튼을 누를 때만 연산 작동!
+        # =============================================================
         with b_col1:
             if is_master:
-                if st.button("💾 표에서 수정한 내용 DB에 영구 저장"):
+                if st.button("💾 표에서 수정한 내용 DB에 영구 저장 (연산 작동)", type="primary"):
                     try:
                         existing_db_df = load_fresh_db_data(current_order)
                         photo_map = {}
@@ -842,6 +845,7 @@ try:
                         valid_rows = []
                         today_str = datetime.now().strftime('%Y-%m-%d')
 
+                        # [저장 시점에만 실행되는 연산 로직]
                         for _, row in raw_save_df.iterrows():
                             row_dict = row.to_dict()
                             has_data = any(str(row_dict.get(col, '')).strip() != '' and str(row_dict.get(col, '')).strip().lower() not in ['nan', 'none'] for col in meaningful_cols)
@@ -856,6 +860,7 @@ try:
                                     if not str(row_dict.get('수리내역_사진', '')).strip():
                                         row_dict['수리내역_사진'] = photo_map[(no_key, sn_key)][1]
 
+                                # 1차 검사 PASS/FAIL 시 날짜 자동 부여 연산
                                 for test_k, date_k in INSPECT_1ST_PAIRS.items():
                                     cur_val = str(row_dict.get(test_k, '')).strip().upper()
                                     cur_date = clean_date_str(row_dict.get(date_k, ''))
@@ -864,6 +869,7 @@ try:
                                     else:
                                         if not cur_val: row_dict[date_k] = ""
 
+                                # 2차 재검사 PASS/FAIL 시 날짜 자동 부여 연산
                                 for test_k, date_k in INSPECT_2ND_PAIRS.items():
                                     cur_val = str(row_dict.get(test_k, '')).strip().upper()
                                     cur_date = clean_date_str(row_dict.get(date_k, ''))
@@ -900,6 +906,7 @@ try:
                                 if col in processed_df.columns:
                                     processed_df[col] = processed_df[col].apply(clean_date_str)
 
+                            # 접수횟수 자동 카운트 연산 수행
                             processed_df = calculate_reception_counts(processed_df)
                             final_save_df = processed_df[EXCEL_FIELDS].fillna("").astype(str)
                             final_save_df.to_sql("as_data", conn, if_exists="replace", index=False)
@@ -972,7 +979,6 @@ try:
             summary_labels = [f"NO.{r.get('NO.', '')} ({r.get('제품명', '')})" for r in selected_rows]
             st.caption(f"선택 항목: {', '.join(summary_labels[:8])}{' 외 ' + str(len(summary_labels)-8) + '건' if len(summary_labels) > 8 else ''}")
 
-            # [최적화 핵심] 캐시된 함수(cached_generate_multi_repair_excel)를 사용하여 체크박스 선택 시 딜레이 제거
             try:
                 rows_tuple = tuple(tuple(sorted(r.items())) for r in selected_rows)
                 multi_excel_bytes = cached_generate_multi_repair_excel(rows_tuple, TEMPLATE_FILE)
@@ -1029,7 +1035,7 @@ try:
             min_d = valid_dates.min().date() if not valid_dates.empty else datetime(2026, 1, 1).date()
             max_d = valid_dates.max().date() if not valid_dates.empty else datetime.now().date()
             with f_col2: start_date = st.date_input("시작일", value=min_d)
-            with f_col3: end_date = st.date_input(" 종료일", value=max_d)
+            with f_col3: end_date = st.date_input("종료일", value=max_d)
 
         with f_col4:
             cost_options = ["전체 (유/무상)", "무상", "유상", "미기재/기타"]
