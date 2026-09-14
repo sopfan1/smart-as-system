@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 초고속 전면 최적화 버전")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 초고속 최적화 버전")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -85,7 +85,6 @@ def init_db():
 
 init_db()
 
-@st.cache_data(show_spinner=False)
 def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
     try:
         df = pd.read_sql("SELECT rowid as rowid_val, * FROM as_data", conn)
@@ -101,6 +100,10 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
         if col in ed_df.columns:
             ed_df[col] = ed_df[col].astype(str).str.strip().replace(['nan', 'None', 'NAT', 'NaT'], '')
     
+    for col in list(INSPECT_1ST_PAIRS.keys()) + list(INSPECT_2ND_PAIRS.keys()):
+        ed_df[col] = ed_df[col].fillna("").astype(str).str.strip().str.upper()
+        ed_df[col] = ed_df[col].apply(lambda x: x if x in ['PASS', 'FAIL'] else "")
+        
     ed_df['temp_no_sort'] = ed_df['NO.'].apply(lambda x: safe_int_no(x) if safe_int_no(x) is not None else 999999)
     ed_df.sort_values(by='temp_no_sort', ascending=True, inplace=True)
     ed_df.drop(columns=['temp_no_sort'], inplace=True)
@@ -110,9 +113,6 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
     else:
         ed_df = ed_df.reset_index(drop=True)
     return ed_df
-
-def clear_data_cache():
-    load_fresh_db_data.clear()
 
 # -------------------------------------------------------------
 # [3. 보조 유틸 함수]
@@ -175,10 +175,7 @@ def calculate_reception_counts(df_to_calc):
     df_to_calc['접수횟수'] = counts
     return df_to_calc
 
-# [초고속 최적화] 대장 엑셀 다운로드 함수 (메모리 버퍼 최적화)
-@st.cache_data(show_spinner=False)
-def cached_make_excel_bytes_with_merge(dataframe_tuple):
-    dataframe = pd.DataFrame(dataframe_tuple)
+def make_excel_bytes_with_merge(dataframe):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'AS관리대장'
@@ -302,9 +299,9 @@ def prepare_excel_image(filepath, target_w_cm=4.5, target_h_cm=6.0):
         target_h = round((target_h_cm / 2.54) * 96)
         with PILImage.open(resolved_path) as raw_img:
             img = ImageOps.exif_transpose(raw_img)
-            img_resized = img.resize((target_w, target_h), PILImage.Resampling.BILINEAR)
+            img_resized = img.resize((target_w, target_h), PILImage.Resampling.LANCZOS)
             buf = io.BytesIO()
-            img_resized.convert("RGB").save(buf, format='JPEG', quality=85)
+            img_resized.convert("RGB").save(buf, format='JPEG', quality=95)
             buf.seek(0)
             xl_img = OpenpyxlImage(buf)
             xl_img.width = target_w
@@ -356,9 +353,7 @@ def format_report_result(val):
         else: formatted.append("-")
     return "\n".join(formatted) if formatted else "-"
 
-@st.cache_data(show_spinner=False)
-def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TEMPLATE_FILE):
-    selected_rows_data = [dict(r) for r in selected_rows_tuple]
+def generate_multi_repair_excel(selected_rows_data, template_filename=TEMPLATE_FILE):
     if not os.path.exists(template_filename):
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -367,8 +362,10 @@ def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TE
         wb.save(out_buf)
         return out_buf.getvalue()
 
-    wb = openpyxl.load_workbook(template_filename, data_only=False)
+    wb = openpyxl.load_workbook(template_filename)
     template_ws = wb.active
+
+    active_buffers = []
 
     for idx, row_data in enumerate(selected_rows_data):
         no_val = str(row_data.get('NO.', idx + 1)).replace('/', '_').strip()
@@ -419,50 +416,46 @@ def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TE
         date_header_col = None
         result_header_col = None
 
-        max_r = min(ws.max_row, 55)
-        max_c = min(ws.max_column, 20)
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                val_check = str(ws.cell(row=r, column=c).value or '').replace(' ', '')
+                if '검사일자' in val_check:
+                    date_header_col = c
+                elif val_check == '판정':
+                    result_header_col = c
 
-        for r in range(1, max_r + 1):
-            for c in range(1, max_c + 1):
-                cell_val = ws.cell(row=r, column=c).value
-                if cell_val:
-                    val_check = str(cell_val).replace(' ', '')
-                    if '검사일자' in val_check:
-                        date_header_col = c
-                    elif val_check == '판정':
-                        result_header_col = c
-
-        for r in range(1, max_r + 1):
-            for c in range(1, max_c + 1):
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
                 cell = ws.cell(row=r, column=c)
-                val = cell.value
-                if val is None: continue
-                val_str = str(val).strip()
-                if not val_str: continue
-                val_no_space = val_str.replace(" ", "")
+                val = str(cell.value).strip() if cell.value is not None else ""
+                val_no_space = val.replace(" ", "")
 
-                if val_str == "접수일":
+                if not val: continue
+
+                if val == "접수일":
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, clean_date_str(row_data.get('접수일', '')))
-                elif val_str == "프로젝트":
+                elif val == "프로젝트":
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, row_data.get('프로젝트', ''))
-                elif val_str == "제품명":
+                elif val == "제품명":
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, row_data.get('제품명', ''))
-                elif "S/N" in val_str.upper() or "제품S/N" in val_str:
+                elif "S/N" in val.upper() or "제품S/N" in val:
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, row_data.get('제품 S/N', ''))
-                elif val_str == "접수내역":
+                elif val == "접수내역":
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, row_data.get('접수내역', ''))
-                elif "불량증상기재" in val_no_space or "불량증상" in val_no_space:
-                    j_cell = ws.cell(row=cell.row, column=10)
+                elif "불량증상기재" in val_no_space or "불량증상" in val_no_space or "불량증상기재" in val:
+                    target_row = cell.row
+                    j_cell = ws.cell(row=target_row, column=10)
                     set_safe_cell_value(ws, j_cell, row_data.get('확인내역', ''))
-                elif val_str == "수리내역" or "수리내역기재" in val_no_space:
-                    j_cell = ws.cell(row=cell.row, column=10)
+                elif val == "수리내역" or "수리내역기재" in val_no_space:
+                    target_row = cell.row
+                    j_cell = ws.cell(row=target_row, column=10)
                     set_safe_cell_value(ws, j_cell, combined_repair_desc)
-                elif val_str == "비고":
+                elif val == "비고":
                     inp_cell = get_adjacent_input_cell(ws, cell)
                     set_safe_cell_value(ws, inp_cell, row_data.get('비고', ''))
                 elif "확인내역_사진" in val_no_space:
@@ -470,31 +463,31 @@ def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TE
                 elif "수리내역_사진" in val_no_space:
                     photo_cells_map['rep'] = cell
 
-                elif "육안검사" in val_str:
+                elif "육안검사" in val:
                     d_col = date_header_col if date_header_col else (cell.column + 2)
                     res_col = result_header_col if result_header_col else (d_col + 1)
                     set_safe_cell_value(ws, ws.cell(row=r, column=d_col), inspect_merged['육안_일자'] or "-")
                     set_safe_cell_value(ws, ws.cell(row=r, column=res_col), format_report_result(inspect_merged['육안_결과']))
 
-                elif "전자소자" in val_str or "특성검사" in val_str:
+                elif "전자소자" in val or "특성검사" in val:
                     d_col = date_header_col if date_header_col else (cell.column + 2)
                     res_col = result_header_col if result_header_col else (d_col + 1)
                     set_safe_cell_value(ws, ws.cell(row=r, column=d_col), inspect_merged['특성_일자'] or "-")
                     set_safe_cell_value(ws, ws.cell(row=r, column=res_col), format_report_result(inspect_merged['특성_결과']))
 
-                elif "기능/조합" in val_str or "조합시험" in val_str:
+                elif "기능/조합" in val or "조합시험" in val:
                     d_col = date_header_col if date_header_col else (cell.column + 2)
                     res_col = result_header_col if result_header_col else (d_col + 1)
                     set_safe_cell_value(ws, ws.cell(row=r, column=d_col), inspect_merged['조합_일자'] or "-")
                     set_safe_cell_value(ws, ws.cell(row=r, column=res_col), format_report_result(inspect_merged['조합_결과']))
 
-                elif "AGING" in val_str.upper() or "에이징" in val_str:
+                elif "AGING" in val.upper() or "에이징" in val:
                     d_col = date_header_col if date_header_col else (cell.column + 2)
                     res_col = result_header_col if result_header_col else (d_col + 1)
                     set_safe_cell_value(ws, ws.cell(row=r, column=d_col), inspect_merged['AGING_일자'] or "-")
                     set_safe_cell_value(ws, ws.cell(row=r, column=res_col), format_report_result(inspect_merged['AGING_결과']))
 
-                elif "FULL부하" in val_str.upper() or "LONGRUN" in val_str.upper():
+                elif "FULL부하" in val.upper() or "LONGRUN" in val.upper():
                     d_col = date_header_col if date_header_col else (cell.column + 2)
                     res_col = result_header_col if result_header_col else (d_col + 1)
                     set_safe_cell_value(ws, ws.cell(row=r, column=d_col), inspect_merged['FULL부하_일자'] or "-")
@@ -503,25 +496,27 @@ def cached_generate_multi_repair_excel(selected_rows_tuple, template_filename=TE
         if 'conf' in photo_cells_map:
             p_cell1 = photo_cells_map['conf']
             top_r, top_c = p_cell1.row, p_cell1.column
-            for m in wb.active.merged_cells.ranges:
+            for m in ws.merged_cells.ranges:
                 if p_cell1.coordinate in m:
                     top_r, top_c = m.min_row, m.min_col
                     break
             ws.cell(row=top_r, column=top_c).value = ""
             img1 = prepare_excel_image(row_data.get('확인내역_사진'))
             if img1:
+                if hasattr(img1, '_image_buffer'): active_buffers.append(img1._image_buffer)
                 add_image_with_nudge(ws, img1, top_c, top_r, nudge_x=4, nudge_y=4)
 
         if 'rep' in photo_cells_map:
             p_cell2 = photo_cells_map['rep']
             top_r, top_c = p_cell2.row, p_cell2.column
-            for m in wb.active.merged_cells.ranges:
+            for m in ws.merged_cells.ranges:
                 if p_cell2.coordinate in m:
                     top_r, top_c = m.min_row, m.min_col
                     break
             ws.cell(row=top_r, column=top_c).value = ""
             img2 = prepare_excel_image(row_data.get('수리내역_사진'))
             if img2:
+                if hasattr(img2, '_image_buffer'): active_buffers.append(img2._image_buffer)
                 add_image_with_nudge(ws, img2, top_c, top_r, nudge_x=4, nudge_y=4)
 
     out_buf = io.BytesIO()
@@ -560,7 +555,6 @@ current_order = st.radio("대장 표시 순서", ["최신순 (마지막 NO.부�
 
 if current_order != st.session_state["last_order"]:
     st.session_state["last_order"] = current_order
-    clear_data_cache()
     st.session_state["display_df"] = load_fresh_db_data(current_order)
     if '선택' not in st.session_state["display_df"].columns:
         st.session_state["display_df"].insert(0, '선택', False)
@@ -594,7 +588,6 @@ if is_master:
                 final_import_df = excel_df[EXCEL_FIELDS].fillna("").astype(str)
                 final_import_df.to_sql("as_data", conn, if_exists="replace", index=False)
                 
-                clear_data_cache()
                 st.session_state["display_df"] = load_fresh_db_data(current_order)
                 if '선택' not in st.session_state["display_df"].columns:
                     st.session_state["display_df"].insert(0, '선택', False)
@@ -609,7 +602,6 @@ if is_master:
                 conn.execute("DELETE FROM as_data")
                 conn.commit()
                 
-                clear_data_cache()
                 st.session_state["display_df"] = load_fresh_db_data(current_order)
                 if '선택' not in st.session_state["display_df"].columns:
                     st.session_state["display_df"].insert(0, '선택', False)
@@ -685,7 +677,6 @@ try:
 
                             combined_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
                             
-                            clear_data_cache()
                             st.session_state["display_df"] = load_fresh_db_data(current_order)
                             if '선택' not in st.session_state["display_df"].columns:
                                 st.session_state["display_df"].insert(0, '선택', False)
@@ -725,7 +716,6 @@ try:
                                         fresh_check.at[target_idx, '수리내역_사진'] = path2
                                     
                                     fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                    clear_data_cache()
                                     st.session_state["display_df"] = load_fresh_db_data(current_order)
                                     if '선택' not in st.session_state["display_df"].columns:
                                         st.session_state["display_df"].insert(0, '선택', False)
@@ -737,7 +727,6 @@ try:
                                     fresh_check.at[target_idx, '확인내역_사진'] = ""
                                     fresh_check.at[target_idx, '수리내역_사진'] = ""
                                     fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                    clear_data_cache()
                                     st.session_state["display_df"] = load_fresh_db_data(current_order)
                                     if '선택' not in st.session_state["display_df"].columns:
                                         st.session_state["display_df"].insert(0, '선택', False)
@@ -777,7 +766,7 @@ try:
         st.caption(f"총 데이터: {len(st.session_state['display_df']):,}건 중 **검색/필터된 항목: {len(view_df):,}건** 표시 중")
 
         if is_master:
-            st.markdown("#### 📋 AS관리대장 (관리자 편집 모드 - 초고속 전면 최적화 적용됨)")
+            st.markdown("#### 📋 AS관리대장 (관리자 편집 모드)")
         else:
             st.markdown("#### 📋 AS관리대장 (조회 전용 모드)")
 
@@ -823,7 +812,7 @@ try:
             hide_index=True,
             height=850,
             num_rows="dynamic" if is_master else "fixed",
-            key="stable_as_table_editor_v8"
+            key="stable_as_table_editor_v6"
         )
 
         for idx in edited_df.index:
@@ -833,7 +822,7 @@ try:
         
         with b_col1:
             if is_master:
-                if st.button("💾 표에서 수정한 내용 DB에 영구 저장 (연산 작동)", type="primary"):
+                if st.button("💾 표에서 수정한 내용 DB에 영구 저장"):
                     try:
                         existing_db_df = load_fresh_db_data(current_order)
                         photo_map = {}
@@ -913,7 +902,6 @@ try:
                             final_save_df = processed_df[EXCEL_FIELDS].fillna("").astype(str)
                             final_save_df.to_sql("as_data", conn, if_exists="replace", index=False)
 
-                            clear_data_cache()
                             st.session_state["display_df"] = load_fresh_db_data(current_order)
                             if '선택' not in st.session_state["display_df"].columns:
                                 st.session_state["display_df"].insert(0, '선택', False)
@@ -951,7 +939,6 @@ try:
 
                             final_db_df.to_sql("as_data", conn, if_exists="replace", index=False)
                             
-                            clear_data_cache()
                             st.session_state["display_df"] = load_fresh_db_data(current_order)
                             if '선택' not in st.session_state["display_df"].columns:
                                 st.session_state["display_df"].insert(0, '선택', False)
@@ -964,10 +951,8 @@ try:
                 st.caption("🔒 일반 사용자는 행 삭제가 제한됩니다.")
 
         with b_col3:
-            # [초고속 최적화 적용] 튜플 형태로 변환하여 캐시된 대장 엑셀 다운로드 실행
             fresh_ledger = load_fresh_db_data(current_order)[EXCEL_FIELDS]
-            ledger_tuple = tuple(tuple(r.items()) for _, r in fresh_ledger.iterrows())
-            ledger_excel_bytes = cached_make_excel_bytes_with_merge(ledger_tuple)
+            ledger_excel_bytes = make_excel_bytes_with_merge(fresh_ledger)
             st.download_button(
                 label="📥 AS관리대장 엑셀 다운로드",
                 data=ledger_excel_bytes,
@@ -986,8 +971,7 @@ try:
             st.caption(f"선택 항목: {', '.join(summary_labels[:8])}{' 외 ' + str(len(summary_labels)-8) + '건' if len(summary_labels) > 8 else ''}")
 
             try:
-                rows_tuple = tuple(tuple(sorted(r.items())) for r in selected_rows)
-                multi_excel_bytes = cached_generate_multi_repair_excel(rows_tuple, TEMPLATE_FILE)
+                multi_excel_bytes = generate_multi_repair_excel(selected_rows)
                 st.download_button(
                     label=f"📥 선택한 {len(selected_rows)}건 수리 REPORT 엑셀 다운로드",
                     data=multi_excel_bytes,
