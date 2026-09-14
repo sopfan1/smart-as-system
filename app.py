@@ -16,7 +16,7 @@ from PIL import Image as PILImage, ImageOps
 # -------------------------------------------------------------
 # [1. 기본 설정 및 경로 지정]
 # -------------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Smart AS ERP - 관리대장 & 권한 관리")
+st.set_page_config(layout="wide", page_title="Smart AS ERP - 관리대장 & 검색/필터")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_DIR = os.path.join(BASE_DIR, "attached_images")
@@ -165,10 +165,14 @@ def load_fresh_db_data(order_mode="최신순 (마지막 NO.부터)"):
         ed_df[col] = ed_df[col].fillna("").astype(str).str.strip().str.upper()
         ed_df[col] = ed_df[col].apply(lambda x: x if x in ['PASS', 'FAIL'] else "")
         
+    ed_df['temp_no_sort'] = ed_df['NO.'].apply(lambda x: safe_int_no(x) if safe_int_no(x) is not None else 999999)
+    ed_df.sort_values(by='temp_no_sort', ascending=True, inplace=True)
+    ed_df.drop(columns=['temp_no_sort'], inplace=True)
+
     if order_mode.startswith("최신순"):
-        ed_df = ed_df.iloc[::-1].reset_index(drop=False)
+        ed_df = ed_df.iloc[::-1].reset_index(drop=True)
     else:
-        ed_df = ed_df.reset_index(drop=False)
+        ed_df = ed_df.reset_index(drop=True)
     return ed_df
 
 def make_excel_bytes_with_merge(dataframe):
@@ -547,12 +551,19 @@ st.title("🏢 Smart AS Management & KPI System")
 if "last_order" not in st.session_state:
     st.session_state["last_order"] = "최신순 (마지막 NO.부터)"
 
-if "display_df" not in st.session_state or st.session_state["display_df"] is None:
-    st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+current_order = st.radio("대장 표시 순서", ["최신순 (마지막 NO.부터)", "과거순 (NO. 1부터)"], horizontal=True, key="sort_order_radio")
+
+if current_order != st.session_state["last_order"]:
+    st.session_state["last_order"] = current_order
+    st.session_state["display_df"] = load_fresh_db_data(current_order)
     if '선택' not in st.session_state["display_df"].columns:
         st.session_state["display_df"].insert(0, '선택', False)
 
-# 마스터 관리자만 엑셀 업로드 및 전체 초기화 가능
+if "display_df" not in st.session_state or st.session_state["display_df"] is None:
+    st.session_state["display_df"] = load_fresh_db_data(current_order)
+    if '선택' not in st.session_state["display_df"].columns:
+        st.session_state["display_df"].insert(0, '선택', False)
+
 if is_master:
     with st.expander("📥 [관리자 전용] 엑셀 파일 업로드 및 DB 동기화", expanded=False):
         uploaded_file = st.file_uploader("AS관리대장 엑셀 파일(.xlsx) 선택", type=["xlsx", "xls"], key="excel_uploader")
@@ -577,7 +588,7 @@ if is_master:
                 final_import_df = excel_df[EXCEL_FIELDS].fillna("").astype(str)
                 final_import_df.to_sql("as_data", conn, if_exists="replace", index=False)
                 
-                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                st.session_state["display_df"] = load_fresh_db_data(current_order)
                 if '선택' not in st.session_state["display_df"].columns:
                     st.session_state["display_df"].insert(0, '선택', False)
                 st.success("데이터베이스에 정상 반영되었습니다.")
@@ -591,7 +602,7 @@ if is_master:
                 conn.execute("DELETE FROM as_data")
                 conn.commit()
                 
-                st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                st.session_state["display_df"] = load_fresh_db_data(current_order)
                 if '선택' not in st.session_state["display_df"].columns:
                     st.session_state["display_df"].insert(0, '선택', False)
                     
@@ -640,7 +651,7 @@ try:
                         if not new_sn.strip() and not new_prod_name.strip():
                             st.warning("제품명 또는 제품 S/N을 최소 1개 이상 입력해 주세요.")
                         else:
-                            current_all_df = load_fresh_db_data(st.session_state["last_order"])
+                            current_all_df = load_fresh_db_data(current_order)
                             int_nos = [safe_int_no(v) for v in current_all_df['NO.']]
                             valid_nos = [x for x in int_nos if x is not None]
                             next_no = (max(valid_nos) + 1) if valid_nos else 1
@@ -666,14 +677,14 @@ try:
 
                             combined_df[EXCEL_FIELDS].fillna("").astype(str).to_sql("as_data", conn, if_exists="replace", index=False)
                             
-                            st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                            st.session_state["display_df"] = load_fresh_db_data(current_order)
                             if '선택' not in st.session_state["display_df"].columns:
                                 st.session_state["display_df"].insert(0, '선택', False)
                             st.toast(f"✅ NO.{next_no} 등록 완료!", icon="🎉")
                             st.rerun()
 
             with st.expander("📷 [관리자 전용] 특정 접수 건 사진 등록 및 삭제", expanded=False):
-                fresh_check = load_fresh_db_data(st.session_state["last_order"])
+                fresh_check = load_fresh_db_data(current_order)
                 if not fresh_check.empty:
                     valid_photo_nos = [str(v) for v in fresh_check['NO.'].tolist() if str(v).strip()]
                     if valid_photo_nos:
@@ -705,7 +716,7 @@ try:
                                         fresh_check.at[target_idx, '수리내역_사진'] = path2
                                     
                                     fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                    st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                                    st.session_state["display_df"] = load_fresh_db_data(current_order)
                                     if '선택' not in st.session_state["display_df"].columns:
                                         st.session_state["display_df"].insert(0, '선택', False)
                                     st.toast("사진이 정상 저장되었습니다!", icon="✅")
@@ -716,7 +727,7 @@ try:
                                     fresh_check.at[target_idx, '확인내역_사진'] = ""
                                     fresh_check.at[target_idx, '수리내역_사진'] = ""
                                     fresh_check[EXCEL_FIELDS].to_sql("as_data", conn, if_exists="replace", index=False)
-                                    st.session_state["display_df"] = load_fresh_db_data(st.session_state["last_order"])
+                                    st.session_state["display_df"] = load_fresh_db_data(current_order)
                                     if '선택' not in st.session_state["display_df"].columns:
                                         st.session_state["display_df"].insert(0, '선택', False)
                                     st.toast("해당 건의 사진이 모두 삭제되었습니다.", icon="🗑️")
@@ -724,16 +735,36 @@ try:
         else:
             st.info("ℹ️ 현재 **일반 사용자 모드**입니다. 신규 등록 및 데이터 수정은 사이드바에서 마스터 계정(`jwko`)으로 로그인 후 가능합니다.")
 
-        ctrl1, _ = st.columns([3, 7])
-        with ctrl1:
-            current_order = st.radio("대장 표시 순서", ["최신순 (마지막 NO.부터)", "과거순 (NO. 1부터)"], horizontal=True, key="sort_order_radio")
-        
-        if current_order != st.session_state["last_order"]:
-            st.session_state["last_order"] = current_order
-            st.session_state["display_df"] = load_fresh_db_data(current_order)
-            if '선택' not in st.session_state["display_df"].columns:
-                st.session_state["display_df"].insert(0, '선택', False)
-            st.rerun()
+        # -------------------------------------------------------------
+        # [엑셀 스타일 검색 및 필터 바 추가]
+        # -------------------------------------------------------------
+        st.markdown("#### 🔎 AS관리대장 검색 및 필터 바")
+        s_c1, s_c2, s_c3, s_c4 = st.columns(4)
+        with s_c1:
+            search_query = st.text_input("🔍 통합 검색 (제품명, S/N, 내용 등)", value="", key="ledger_search_box")
+        with s_c2:
+            all_projs = sorted([str(p).strip() for p in st.session_state["display_df"]['프로젝트'].unique() if str(p).strip()])
+            sel_proj_filter = st.selectbox("🏗️ 프로젝트 필터", ["전체 프로젝트"] + all_projs, key="ledger_proj_filter")
+        with s_c3:
+            sel_cost_filter = st.selectbox("💰 유/무상 필터", ["전체", "무상", "유상"], key="ledger_cost_filter")
+        with s_c4:
+            all_res = sorted([str(r).strip() for r in st.session_state["display_df"]['처리결과'].unique() if str(r).strip()])
+            sel_res_filter = st.selectbox("📌 처리결과 필터", ["전체"] + all_res, key="ledger_res_filter")
+
+        # 필터링 적용
+        view_df = st.session_state["display_df"].copy()
+        if search_query.strip():
+            q = search_query.strip().lower()
+            mask = view_df.astype(str).apply(lambda row: row.str.lower().str.contains(q).any(), axis=1)
+            view_df = view_df[mask]
+        if sel_proj_filter != "전체 프로젝트":
+            view_df = view_df[view_df['프로젝트'].astype(str).str.strip() == sel_proj_filter]
+        if sel_cost_filter != "전체":
+            view_df = view_df[view_df['유/무상'].astype(str).str.strip().str.contains(sel_cost_filter)]
+        if sel_res_filter != "전체":
+            view_df = view_df[view_df['처리결과'].astype(str).str.strip() == sel_res_filter]
+
+        st.caption(f"총 데이터: {len(st.session_state['display_df']):,}건 중 **검색/필터된 항목: {len(view_df):,}건** 표시 중")
 
         if is_master:
             st.markdown("#### 📋 AS관리대장 (관리자 편집 모드)")
@@ -774,7 +805,7 @@ try:
             "비고": st.column_config.TextColumn("비고", disabled=not is_master)
         }
 
-        editor_df = st.session_state["display_df"][['선택'] + EXCEL_FIELDS].copy()
+        editor_df = view_df[['선택'] + EXCEL_FIELDS].copy()
         
         edited_df = st.data_editor(
             editor_df,
@@ -782,10 +813,12 @@ try:
             hide_index=True,
             height=850,
             num_rows="dynamic" if is_master else "fixed",
-            key="stable_as_table_editor_v4"
+            key="stable_as_table_editor_v5"
         )
 
-        st.session_state["display_df"][['선택'] + EXCEL_FIELDS] = edited_df.copy()
+        # 수정된 내용을 전체 session_state["display_df"]에 반영 (인덱스 기준 매칭)
+        for idx in edited_df.index:
+            st.session_state["display_df"].loc[idx, ['선택'] + EXCEL_FIELDS] = edited_df.loc[idx, ['선택'] + EXCEL_FIELDS].values
 
         b_col1, b_col2, b_col3 = st.columns([3, 3, 4])
         
@@ -801,7 +834,7 @@ try:
                                 sn_key = str(row.get('제품 S/N', '')).strip()
                                 photo_map[(no_key, sn_key)] = (row.get('확인내역_사진', ''), row.get('수리내역_사진', ''))
 
-                        raw_save_df = edited_df[EXCEL_FIELDS].copy()
+                        raw_save_df = st.session_state["display_df"][EXCEL_FIELDS].copy()
                         if current_order.startswith("최신순"):
                             raw_save_df = raw_save_df.iloc[::-1].reset_index(drop=True)
 
@@ -891,16 +924,19 @@ try:
                         st.warning("삭제할 행을 앞쪽 [선택] 체크박스로 먼저 지정해 주세요.")
                     else:
                         try:
-                            remaining_df = edited_df[edited_df['선택'] == False][EXCEL_FIELDS].copy()
+                            # 전체 데이터에서 선택된 행들을 제외
+                            sel_indices = delete_targets.index.tolist()
+                            remaining_df = st.session_state["display_df"].drop(index=sel_indices).copy()
+                            clean_rem_df = remaining_df[EXCEL_FIELDS].copy()
+
                             meaningful_cols = ['접수일', '프로젝트', '제품명', '제품 S/N', '접수내역', '확인내역']
                             valid_remaining = []
-                            for _, row in remaining_df.iterrows():
+                            for _, row in clean_rem_df.iterrows():
                                 if any(str(row.get(c, '')).strip() not in ['', 'nan', 'None'] for c in meaningful_cols):
                                     valid_remaining.append(row)
 
                             if valid_remaining:
-                                clean_rem_df = pd.DataFrame(valid_remaining, columns=EXCEL_FIELDS)
-                                final_db_df = clean_rem_df[EXCEL_FIELDS].fillna("").astype(str)
+                                final_db_df = pd.DataFrame(valid_remaining, columns=EXCEL_FIELDS).fillna("").astype(str)
                             else:
                                 final_db_df = pd.DataFrame(columns=EXCEL_FIELDS)
 
