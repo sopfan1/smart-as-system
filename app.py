@@ -523,20 +523,25 @@ def generate_repair_report(selected_rows_tuple, template_filename=TEMPLATE_FILE)
                 _safe_set(ws, r, vc, row_data.get('제품 S/N', ''))
             elif v_str == "접수내역":
                 _safe_set(ws, r, vc, row_data.get('접수내역', ''))
-            elif "불량증상" in v_nospace and "사진" not in v_nospace:
-                # 불량증상 값(=대장의 확인내역)은 라벨 행의 값칸(J열, =10번)에 기록
+            # ✅ 개선⑲: 불량증상/수리내역 '라벨'은 A열(c==1)에만 있음.
+            #   템플릿의 J7·J14 값칸에도 "불량 증상 기재" 안내문구가 있어서,
+            #   열 제한을 안 하면 그 안내문구가 '불량증상'에 매칭되어
+            #   수리내역칸(J14)에 확인내역이 잘못 덮이는 문제가 있었음.
+            elif c == 1 and "불량증상" in v_nospace:
+                # 불량증상 값칸 = 확인내역
                 _safe_set(ws, r, 10, row_data.get('확인내역', ''))
-            elif "수리내역" in v_nospace and "사진" not in v_nospace:
-                # 수리내역 값 = 불량원인 + 수리내역. 둘 다 비면 '-'.
+            elif c == 1 and "수리내역" in v_nospace:
+                # 수리내역 값칸 = 불량원인 + 수리내역 (둘 다 비면 '-')
                 _safe_set(ws, r, 10, repair_desc if repair_desc.strip() else "-")
             elif v_str == "비고":
                 _safe_set(ws, r, vc, row_data.get('비고', ''))
-            elif "확인내역_사진" in v_nospace:
+            # 사진 자리표시자는 D열(c==4)에 있음
+            elif c == 4 and "확인내역_사진" in v_nospace:
                 _safe_set(ws, r, c, "")
                 img1 = prepare_excel_image(row_data.get('확인내역_사진'))
                 if img1:
                     add_image_with_nudge(ws, img1, c, r, 4, 4)
-            elif "수리내역_사진" in v_nospace:
+            elif c == 4 and "수리내역_사진" in v_nospace:
                 _safe_set(ws, r, c, "")
                 img2 = prepare_excel_image(row_data.get('수리내역_사진'))
                 if img2:
