@@ -209,9 +209,19 @@ def calc_aging_48h(start_date_str, multiline=False):
 
 
 def calculate_reception_counts(df_to_calc):
-    # ✅ 개선⑤: iterrows 대신 컬럼 배열을 직접 순회
-    sn_arr = df_to_calc['제품 S/N'].astype(str).str.strip().tolist()
-    no_arr = df_to_calc['NO.'].astype(str).str.strip().tolist()
+    # ✅ 개선⑤(수정): '제품 S/N'/'NO.'에 결측이 있으면 .str.strip() 결과가
+    #   float(nan)으로 되돌아가 .lower() 호출 시 터짐. 각 요소를 str()로 안전 변환.
+    def _to_str_list(col):
+        if col not in df_to_calc.columns:
+            return ["" for _ in range(len(df_to_calc))]
+        series = df_to_calc[col]
+        # 혹시 같은 이름의 컬럼이 중복되어 DataFrame이면 첫 컬럼만 사용
+        if hasattr(series, 'columns'):
+            series = series.iloc[:, 0]
+        return ["" if pd.isna(v) else str(v).strip() for v in series.tolist()]
+
+    sn_arr = _to_str_list('제품 S/N')
+    no_arr = _to_str_list('NO.')
 
     sn_counter = {}
     seen_no_map = {}
@@ -619,6 +629,7 @@ if "display_df" not in st.session_state or st.session_state["display_df"] is Non
 if is_master:
     with st.expander("📥 [관리자 전용] 엑셀 파일 업로드 및 DB 동기화", expanded=False):
         uploaded_file = st.file_uploader("AS관리대장 엑셀 (.xlsx)", type=["xlsx"])
+        st.caption("코드 버전: v20 (float lower 수정 반영본)")  # 배포 최신 여부 확인용
         if uploaded_file and st.button("🚀 DB 반영"):
             try:
                 ex_df = pd.read_excel(uploaded_file)
@@ -626,6 +637,9 @@ if is_master:
                 for c in EXCEL_FIELDS:
                     if c not in ex_df.columns:
                         ex_df[c] = ""
+                # ✅ 모든 열을 문자열로 정규화(결측은 빈문자열). float가 섞여도 안전.
+                for c in EXCEL_FIELDS:
+                    ex_df[c] = ex_df[c].map(lambda v: "" if pd.isna(v) else str(v).strip())
                 ex_df['NO.'] = [
                     str(safe_int_no(v)) if safe_int_no(v) is not None else str(i + 1)
                     for i, v in enumerate(ex_df['NO.'])
@@ -640,7 +654,10 @@ if is_master:
                 st.success("반영 완료")
                 st.rerun()
             except Exception as e:
+                import traceback
                 st.error(f"오류: {e}")
+                # 정확한 발생 위치를 화면에 표시(배포본 진단용)
+                st.code(traceback.format_exc())
 
 try:
     tab1, tab2 = st.tabs(["📝 AS 관리대장 & 수리 REPORT", "📊 KPI 분석"])
